@@ -1,0 +1,6 @@
+package probe
+
+// TODO: audit
+func Probe(value uint64) uint64 {
+	return value + 1
+}

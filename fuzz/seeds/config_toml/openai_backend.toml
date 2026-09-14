@@ -1,0 +1,6 @@
+[llm]
+backend = "openai-compatible"
+api_url = "https://example.invalid/v1/chat/completions"
+model = "test-model"
+reasoning_effort = "medium"
+temperature = 1.0

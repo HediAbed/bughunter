@@ -1,0 +1,7 @@
+diff --git a/old.rs b/new.rs
+similarity index 100%
+rename from old.rs
+rename to new.rs
+diff --git a/chmod.rs b/chmod.rs
+old mode 100644
+new mode 100755

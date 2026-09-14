@@ -1,0 +1,5 @@
+
+# TODO: audit
+resource "probe" "example" {
+  value = 1
+}

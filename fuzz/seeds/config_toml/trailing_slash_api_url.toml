@@ -1,0 +1,3 @@
+[llm]
+backend = "openai-compatible"
+api_url = "https://api.example.com/v1///"

@@ -1,0 +1,5 @@
+diff --git a/gone.rs b/gone.rs
+--- a/gone.rs
++++ /dev/null
+@@ -1,4 +0,0 @@
+-removed

@@ -1,0 +1,4 @@
+// TODO: audit
+function probe(value) {
+  return value + 1;
+}

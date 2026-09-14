@@ -1,0 +1,6 @@
+public final class Probe {
+    // TODO: audit
+    public static long probe(long value) {
+        return value + 1;
+    }
+}

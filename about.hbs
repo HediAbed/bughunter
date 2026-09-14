@@ -1,0 +1,23 @@
+BugHunter third-party license notices
+=====================================
+
+BugHunter is distributed under the terms in the accompanying LICENSE file. The
+packages listed below are the third-party Cargo packages reachable through the
+normal dependency edges of the bughunter package for the
+x86_64-unknown-linux-gnu target, as pinned by the committed Cargo.lock. Build
+dependencies and development dependencies are excluded. Each section reproduces
+the license text shipped by the packages that share it.
+
+{{#each licenses}}
+-------------------------------------------------------------------------------
+{{{name}}} ({{{id}}})
+
+Used by:
+{{#each used_by}}
+- {{{crate.name}}} {{{crate.version}}}
+  https://crates.io/crates/{{{crate.name}}}/{{{crate.version}}}
+{{/each}}
+
+{{{text}}}
+
+{{/each}}

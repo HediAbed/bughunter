@@ -1,0 +1,6 @@
+#include <cstdint>
+
+// TODO: audit
+std::uint64_t probe(std::uint64_t value) {
+    return value + 1;
+}

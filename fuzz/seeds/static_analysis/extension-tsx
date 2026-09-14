@@ -1,0 +1,2 @@
+// TODO: audit
+export const Probe = () => <div id="probe" />;

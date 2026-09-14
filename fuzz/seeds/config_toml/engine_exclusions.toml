@@ -1,0 +1,4 @@
+[engine]
+exclude_dirs = ["target", "node_modules", "target"]
+exclude_extensions = ["lock", "min.js", "lock"]
+max_depth = 3

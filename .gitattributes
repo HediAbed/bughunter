@@ -1,0 +1,2 @@
+licenses/tree-sitter-unicode-LICENSE.txt -text
+fuzz/seeds/** binary

@@ -1,0 +1,1 @@
+{"findings":[{"category":"quality","severity":"low","title":"unused binding","description":"the binding is never read","file":"sample.rs","line_start":2,"confidence":"high"}]}

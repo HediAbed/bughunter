@@ -1,0 +1,146 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: verify, build, notices, sbom, archive
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: 1.88.0
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+
+      - name: Verify tag version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          crate_version="$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "bughunter") | .version')"
+          test "${RELEASE_TAG#v}" = "$crate_version"
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Export reproducibility variables
+        run: |
+          echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
+          echo "TZ=UTC" >> "$GITHUB_ENV"
+          echo "LC_ALL=C" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Install pinned release tooling
+        run: |
+          cargo install cargo-about --version "$(make --no-print-directory print-cargo-about-version)" --locked --features cli
+          cargo install cargo-cyclonedx --version "$(make --no-print-directory print-cargo-cyclonedx-version)" --locked
+
+      - name: Generate and verify third-party license notice
+        run: make license-notice
+
+      - name: Generate and sanitize SBOM
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          version="${RELEASE_TAG#v}"
+          generate_sbom() {
+            rm -f bughunter-unsanitized.cdx.json
+            cargo cyclonedx --format json --spec-version 1.5 --target "$(make --no-print-directory print-release-target)" --no-build-deps --override-filename bughunter-unsanitized.cdx
+            git diff --exit-code -- Cargo.lock
+            root_ref="$(jq -r '.metadata.component["bom-ref"]' bughunter-unsanitized.cdx.json)"
+            jq -S --arg root "$root_ref" --arg stable "pkg:cargo/bughunter@${version}" \
+              'del(.metadata.timestamp, .serialNumber) | walk(if type == "string" and startswith($root) then $stable + .[($root | length):] else . end)' \
+              bughunter-unsanitized.cdx.json > "$1"
+          }
+          generate_sbom bughunter.cdx.json
+          ! grep -q 'path+file:' bughunter.cdx.json
+          ! grep -qF "$GITHUB_WORKSPACE" bughunter.cdx.json
+          generate_sbom "$RUNNER_TEMP/bughunter.cdx.json"
+          cmp bughunter.cdx.json "$RUNNER_TEMP/bughunter.cdx.json"
+          jq -r '.components[] | "\(.name) v\(.version)"' bughunter.cdx.json | LC_ALL=C sort -u > "$RUNNER_TEMP/sbom-packages.txt"
+          cargo metadata --locked --format-version 1 | jq -r '.packages[] | "\(.name) v\(.version)"' | LC_ALL=C sort -u > "$RUNNER_TEMP/locked-packages.txt"
+          comm -23 "$(make --no-print-directory print-license-graph)" "$RUNNER_TEMP/sbom-packages.txt" > "$RUNNER_TEMP/sbom-missing.txt"
+          comm -13 "$RUNNER_TEMP/locked-packages.txt" "$RUNNER_TEMP/sbom-packages.txt" > "$RUNNER_TEMP/sbom-unlocked.txt"
+          if [ -s "$RUNNER_TEMP/sbom-missing.txt" ]; then
+            printf '%s\n' 'the SBOM omits released third-party packages:'
+            cat "$RUNNER_TEMP/sbom-missing.txt"
+            exit 1
+          fi
+          if [ -s "$RUNNER_TEMP/sbom-unlocked.txt" ]; then
+            printf '%s\n' 'the SBOM reports components that are absent from Cargo.lock:'
+            cat "$RUNNER_TEMP/sbom-unlocked.txt"
+            exit 1
+          fi
+
+      - name: Assemble release artifacts
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          version="${RELEASE_TAG#v}"
+          archive="bughunter-${version}-$(make --no-print-directory print-release-target).tar.gz"
+          documents="$(make --no-print-directory print-release-documents)"
+          staging="$(mktemp -d)"
+          install -Dm755 target/release/bughunter "$staging/bughunter"
+          for document in $documents; do
+            install -Dm644 "$document" "$staging/$document"
+          done
+          tar --sort=name --mtime="@$SOURCE_DATE_EPOCH" --owner=0 --group=0 --numeric-owner -C "$staging" -cf - . | gzip -n -9 > "$archive"
+          printf '%s\n' bughunter $documents | LC_ALL=C sort > "$RUNNER_TEMP/archive-expected.txt"
+          tar -tzf "$archive" | sed 's|^\./||' | sed '/^$/d' | LC_ALL=C sort > "$RUNNER_TEMP/archive-actual.txt"
+          diff -u "$RUNNER_TEMP/archive-expected.txt" "$RUNNER_TEMP/archive-actual.txt"
+          sha256sum "$archive" bughunter.cdx.json > SHA256SUMS
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-assets
+          path: |
+            bughunter-*-x86_64-unknown-linux-gnu.tar.gz
+            bughunter.cdx.json
+            SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: upload release assets
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: release-assets
+          path: release-assets
+
+      - name: Verify downloaded checksums
+        working-directory: release-assets
+        run: sha256sum --check --strict SHA256SUMS
+
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
+        with:
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          files: |
+            release-assets/bughunter-*-x86_64-unknown-linux-gnu.tar.gz
+            release-assets/bughunter.cdx.json
+            release-assets/SHA256SUMS

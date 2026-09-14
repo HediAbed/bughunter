@@ -1,0 +1,36 @@
+[general]
+log_level = "warn"
+fail_severity = "high"
+min_confidence = "medium"
+output_format = "json"
+output_path = "report.json"
+
+[engine]
+max_file_size_bytes = 262144
+max_depth = 12
+
+[llm]
+backend = "claude-cli"
+claude_cli_binary = "claude"
+model = "sonnet"
+max_tokens = 4096
+temperature = 0.2
+timeout_seconds = 120
+max_retries = 3
+max_agent_iterations = 8
+max_context_tokens = 100000
+max_shard_seconds = 300
+
+[analysis]
+categories = ["bug", "quality", "solid", "vulnerability"]
+
+[analysis.quality]
+max_function_lines = 40
+max_file_lines = 400
+
+[analysis.solid]
+check_srp = true
+check_ocp = false
+check_lsp = true
+check_isp = false
+check_dip = true

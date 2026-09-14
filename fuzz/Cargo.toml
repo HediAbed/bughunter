@@ -1,0 +1,83 @@
+[package]
+name = "bughunter-fuzz"
+version = "0.0.0"
+license = "MIT"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+bughunter = { path = "..", version = "=0.1.0", features = ["fuzzing"] }
+serde_json = "1"
+libfuzzer-sys = "0.4.13"
+tempfile = "3"
+tokio = { version = "1", features = ["rt"] }
+zip = { version = "8", default-features = false, features = ["deflate"] }
+
+[[bin]]
+name = "static_analysis"
+path = "fuzz_targets/static_analysis.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "config_validation"
+path = "fuzz_targets/config_validation.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "archive_extraction"
+path = "fuzz_targets/archive_extraction.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "unified_diff"
+path = "fuzz_targets/unified_diff.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sanitization"
+path = "fuzz_targets/sanitization.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "config_toml"
+path = "fuzz_targets/config_toml.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sse_stream"
+path = "fuzz_targets/sse_stream.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mcp_tool_input"
+path = "fuzz_targets/mcp_tool_input.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "project_path"
+path = "fuzz_targets/project_path.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]

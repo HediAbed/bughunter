@@ -1,0 +1,4 @@
+/* TODO: audit */
+unsigned long probe(unsigned long value) {
+    return value + 1;
+}

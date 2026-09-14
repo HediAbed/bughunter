@@ -1,0 +1,105 @@
+name: sanitizers
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  sanitize:
+    name: ${{ matrix.sanitizer }} sanitizer test suite
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - sanitizer: address and leak
+            gate: sanitize-asan
+          - sanitizer: thread
+            gate: sanitize-tsan
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Read the pinned nightly toolchain
+        run: printf 'NIGHTLY=%s\n' "$(make --no-print-directory print-nightly)" >> "$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: ${{ env.NIGHTLY }}
+          targets: x86_64-unknown-linux-gnu
+          components: rust-src
+
+      - name: Select the pinned nightly toolchain
+        run: printf 'RUSTUP_TOOLCHAIN=%s\n' "$NIGHTLY" >> "$GITHUB_ENV"
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          shared-key: ${{ matrix.gate }}
+
+      - name: Lower ASLR entropy so sanitizer runtimes can map shadow memory
+        run: sudo sysctl -w vm.mmap_rnd_bits=28
+
+      - name: Sanitizer test suite
+        run: make ${{ matrix.gate }}
+
+  fuzz:
+    name: seeded fuzz smoke tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Read the pinned nightly toolchain and cargo-fuzz version
+        run: |
+          printf 'NIGHTLY=%s\n' "$(make --no-print-directory print-nightly)" >> "$GITHUB_ENV"
+          printf 'CARGO_FUZZ_VERSION=%s\n' "$(make --no-print-directory print-cargo-fuzz-version)" >> "$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: ${{ env.NIGHTLY }}
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Select the pinned nightly toolchain
+        run: printf 'RUSTUP_TOOLCHAIN=%s\n' "$NIGHTLY" >> "$GITHUB_ENV"
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          workspaces: fuzz
+          shared-key: fuzz
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --version "$CARGO_FUZZ_VERSION" --locked
+
+      - name: Lower ASLR entropy so sanitizer runtimes can map shadow memory
+        run: sudo sysctl -w vm.mmap_rnd_bits=28
+
+      - name: Seeded fuzz smoke tests
+        run: make fuzz
+
+      - name: Upload fuzz crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts
+          if-no-files-found: ignore
+          retention-days: 7

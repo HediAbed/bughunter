@@ -1,0 +1,109 @@
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MPL-2.0",
+    "NCSA",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+
+targets = ["x86_64-unknown-linux-gnu"]
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+ignore-transitive-dependencies = false
+private = { ignore = true }
+workarounds = ["chrono"]
+
+[ryu.clarify]
+license = "Apache-2.0 OR BSL-1.0"
+
+[[ryu.clarify.files]]
+path = "LICENSE-APACHE"
+checksum = "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+license = "Apache-2.0"
+
+[sync_wrapper.clarify]
+license = "Apache-2.0"
+
+[[sync_wrapper.clarify.files]]
+path = "LICENSE"
+checksum = "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594"
+license = "Apache-2.0"
+
+[tree-sitter.clarify]
+license = "MIT"
+
+[[tree-sitter.clarify.git]]
+path = "LICENSE"
+checksum = "5f9cf9fb6acb1972b35ae29119ce563bb60ec097656bc4b69b9bac2d04c7a147"
+license = "MIT"
+
+[tree-sitter-c.clarify]
+license = "MIT"
+
+[[tree-sitter-c.clarify.git]]
+path = "LICENSE"
+checksum = "2e0110e07abef7c2548b26ec9d6969775617ca539a0dc8dbeeb14d6452c711d1"
+license = "MIT"
+
+[tree-sitter-cpp.clarify]
+license = "MIT"
+
+[[tree-sitter-cpp.clarify.git]]
+path = "LICENSE"
+checksum = "2e0110e07abef7c2548b26ec9d6969775617ca539a0dc8dbeeb14d6452c711d1"
+license = "MIT"
+
+[tree-sitter-go.clarify]
+license = "MIT"
+
+[[tree-sitter-go.clarify.git]]
+path = "LICENSE"
+checksum = "2e0110e07abef7c2548b26ec9d6969775617ca539a0dc8dbeeb14d6452c711d1"
+license = "MIT"
+
+[tree-sitter-java.clarify]
+license = "MIT"
+
+[[tree-sitter-java.clarify.git]]
+path = "LICENSE"
+checksum = "52ed137b039cd9c46409bc22e89938af911c95b157feae2d040b51e6084369a7"
+license = "MIT"
+
+[tree-sitter-javascript.clarify]
+license = "MIT"
+
+[[tree-sitter-javascript.clarify.git]]
+path = "LICENSE"
+checksum = "2e0110e07abef7c2548b26ec9d6969775617ca539a0dc8dbeeb14d6452c711d1"
+license = "MIT"
+
+[tree-sitter-json.clarify]
+license = "MIT"
+
+[[tree-sitter-json.clarify.git]]
+path = "LICENSE"
+checksum = "2e0110e07abef7c2548b26ec9d6969775617ca539a0dc8dbeeb14d6452c711d1"
+license = "MIT"
+
+[tree-sitter-python.clarify]
+license = "MIT"
+
+[[tree-sitter-python.clarify.git]]
+path = "LICENSE"
+checksum = "d724405ce238a22c0d35769c5a36b386ad5958192efe8bbb304fb2896254575f"
+license = "MIT"
+
+[tree-sitter-typescript.clarify]
+license = "MIT"
+
+[[tree-sitter-typescript.clarify.git]]
+path = "LICENSE"
+checksum = "49bf33cf78ef5897e4e161ce1517df7de1ae5042a65b6bcfd44401e0fc606559"
+license = "MIT"

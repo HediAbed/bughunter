@@ -1,0 +1,32 @@
+diff --git a/f0.rs b/f0.rs
+--- a/f0.rs
++++ b/f0.rs
+@@ -1,1 +1,2 @@
+diff --git a/f1.rs b/f1.rs
+--- a/f1.rs
++++ b/f1.rs
+@@ -1,1 +2,3 @@
+diff --git a/f2.rs b/f2.rs
+--- a/f2.rs
++++ b/f2.rs
+@@ -1,1 +3,4 @@
+diff --git a/f3.rs b/f3.rs
+--- a/f3.rs
++++ b/f3.rs
+@@ -1,1 +4,5 @@
+diff --git a/f4.rs b/f4.rs
+--- a/f4.rs
++++ b/f4.rs
+@@ -1,1 +5,6 @@
+diff --git a/f5.rs b/f5.rs
+--- a/f5.rs
++++ b/f5.rs
+@@ -1,1 +6,7 @@
+diff --git a/f6.rs b/f6.rs
+--- a/f6.rs
++++ b/f6.rs
+@@ -1,1 +7,8 @@
+diff --git a/f7.rs b/f7.rs
+--- a/f7.rs
++++ b/f7.rs
+@@ -1,1 +8,9 @@

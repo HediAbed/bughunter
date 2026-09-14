@@ -1,0 +1,74 @@
+[package]
+name = "bughunter"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Static code analysis CLI with optional AI-assisted review"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/HediAbed/bughunter"
+documentation = "https://github.com/HediAbed/bughunter#readme"
+keywords = ["static-analysis", "code-review", "security", "cli", "llm"]
+categories = ["command-line-utilities", "development-tools"]
+publish = false
+include = ["/src", "/LICENSE", "/README.md"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage)", "cfg(coverage_nightly)"] }
+
+[dependencies]
+clap = { version = "4", features = ["derive", "env"] }
+tokio = { version = "1", features = ["io-util", "macros", "process", "rt-multi-thread", "signal", "sync", "time"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "charset", "http2", "json", "rustls-tls", "stream", "system-proxy"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+ignore = "0.4"
+cap-std = "4"
+tree-sitter = "0.25"
+streaming-iterator = "0.1"
+tree-sitter-rust = "0.24"
+tree-sitter-python = "0.23"
+tree-sitter-javascript = "0.23"
+tree-sitter-typescript = "0.23"
+tree-sitter-go = "0.23"
+tree-sitter-java = "0.23"
+tree-sitter-c = "0.23"
+tree-sitter-cpp = "0.23"
+regex = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+directories = "6"
+chrono = { version = "0.4", features = ["serde"] }
+async-trait = "0.1"
+tempfile = "3"
+ratatui = { version = "0.30.2", default-features = false, features = ["all-widgets", "crossterm", "layout-cache", "underline-color"] }
+parking_lot = "0.12.5"
+tree-sitter-bash = "0.25.1"
+tree-sitter-json = "0.24.8"
+tree-sitter-yaml = "0.7.2"
+tree-sitter-hcl = "1.1.0"
+zip = { version = "8", default-features = false, features = ["deflate"] }
+wait-timeout = "0.2"
+unicode-width = "0.2.2"
+unicode-segmentation = "1.13.3"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_Threading"] }
+
+[features]
+fuzzing = []
+
+[dev-dependencies]
+assert_cmd = "2"
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+predicates = "3"
+wiremock = "0.6"
+
+[[bench]]
+name = "large_inputs"
+harness = false
