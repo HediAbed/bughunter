@@ -692,6 +692,7 @@ mod windows_tests {
 
     #[test]
     fn an_owned_job_outlives_a_reaped_leader_and_kills_descendants() {
+        let stage_timeout = GROUP_EXIT_DEADLINE;
         let mut command = std::process::Command::new("cmd.exe");
         command
             .args([
@@ -703,9 +704,21 @@ mod windows_tests {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped());
         let (mut child, group) = spawn_std_grouped(&mut command).unwrap();
-        child.stdin.take().unwrap().write_all(b"ready\n").unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(b"ready\n")
+            .expect("stage: stdin write");
         let mut output = child.stdout.take().unwrap();
-        child.wait().unwrap();
+
+        let (wait_sender, wait_receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            wait_sender.send(child.wait()).unwrap();
+        });
+        wait_receiver
+            .recv_timeout(stage_timeout)
+            .expect("stage: leader exit");
 
         let (sender, receiver) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -717,8 +730,11 @@ mod windows_tests {
             Err(std::sync::mpsc::RecvTimeoutError::Timeout)
         ));
 
-        terminate_group(group).unwrap();
+        terminate_group(group).expect("stage: terminate group");
 
-        assert!(receiver.recv_timeout(GROUP_EXIT_DEADLINE).unwrap().is_ok());
+        receiver
+            .recv_timeout(stage_timeout)
+            .expect("stage: descendant output closes")
+            .expect("stage: descendant output read");
     }
 }
