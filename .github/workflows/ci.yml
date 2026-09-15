@@ -72,14 +72,17 @@ jobs:
 
       - name: Test Windows owned job outlives reaped leader
         timeout-minutes: 5
+        if: always()
         run: cargo test --locked --lib process::windows_tests::an_owned_job_outlives_a_reaped_leader_and_kills_descendants -- --exact
 
       - name: Test Windows tokio group terminates descendants
         timeout-minutes: 5
+        if: always()
         run: cargo test --locked --lib process::windows_tests::a_tokio_group_terminates_descendants -- --exact
 
       - name: Test Windows executable resolution
         timeout-minutes: 5
+        if: always()
         run: cargo test --locked --lib llm::claude_cli::tests::windows_
 
   coverage:
