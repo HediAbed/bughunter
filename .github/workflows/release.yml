@@ -73,8 +73,14 @@ jobs:
               bughunter-unsanitized.cdx.json > "$1"
           }
           generate_sbom bughunter.cdx.json
-          ! grep -q 'path+file:' bughunter.cdx.json
-          ! grep -qF "$GITHUB_WORKSPACE" bughunter.cdx.json
+          if grep -q 'path+file:' bughunter.cdx.json; then
+            echo 'SBOM contains local path references' >&2
+            exit 1
+          fi
+          if grep -qF "$GITHUB_WORKSPACE" bughunter.cdx.json; then
+            echo 'SBOM leaks the workspace path' >&2
+            exit 1
+          fi
           generate_sbom "$RUNNER_TEMP/bughunter.cdx.json"
           cmp bughunter.cdx.json "$RUNNER_TEMP/bughunter.cdx.json"
           jq -r '.components[] | "\(.name) v\(.version)"' bughunter.cdx.json | LC_ALL=C sort -u > "$RUNNER_TEMP/sbom-packages.txt"
@@ -98,14 +104,14 @@ jobs:
         run: |
           version="${RELEASE_TAG#v}"
           archive="bughunter-${version}-$(make --no-print-directory print-release-target).tar.gz"
-          documents="$(make --no-print-directory print-release-documents)"
+          documents="$(make --no-print-directory print-release-documents | tr ' ' '\n' | sed '/^$/d')"
           staging="$(mktemp -d)"
           install -Dm755 target/release/bughunter "$staging/bughunter"
-          for document in $documents; do
+          printf '%s\n' "$documents" | while IFS= read -r document; do
             install -Dm644 "$document" "$staging/$document"
           done
           tar --sort=name --mtime="@$SOURCE_DATE_EPOCH" --owner=0 --group=0 --numeric-owner -C "$staging" -cf - . | gzip -n -9 > "$archive"
-          printf '%s\n' bughunter $documents | LC_ALL=C sort > "$RUNNER_TEMP/archive-expected.txt"
+          { printf '%s\n' bughunter; printf '%s\n' "$documents"; } | LC_ALL=C sort > "$RUNNER_TEMP/archive-expected.txt"
           tar -tzf "$archive" | sed 's|^\./||' | sed '/^$/d' | LC_ALL=C sort > "$RUNNER_TEMP/archive-actual.txt"
           diff -u "$RUNNER_TEMP/archive-expected.txt" "$RUNNER_TEMP/archive-actual.txt"
           sha256sum "$archive" bughunter.cdx.json > SHA256SUMS

@@ -291,6 +291,58 @@ impl Engine for StallingReadEngine {
     ) -> Result<ProjectStats, crate::errors::EngineError> {
         self.delegate.project_stats_with_capability(filesystem)
     }
+
+    fn discover_files_cancellable(
+        &self,
+        root: &std::path::Path,
+        opts: &DiscoverOpts,
+        cancel: &crate::cancel::CancelToken,
+    ) -> Result<Vec<crate::engine::FileEntry>, crate::errors::EngineError> {
+        self.delegate.discover_files_cancellable(root, opts, cancel)
+    }
+
+    fn search_project_text_cancellable(
+        &self,
+        filesystem: &ProjectFilesystem,
+        pattern: &str,
+        opts: &SearchOpts,
+        cancel: &crate::cancel::CancelToken,
+    ) -> Result<Vec<TextMatch>, crate::errors::EngineError> {
+        self.delegate
+            .search_project_text_cancellable(filesystem, pattern, opts, cancel)
+    }
+
+    fn search_inventory_entries(
+        &self,
+        inventory: &ProjectInventory,
+        entries: &[crate::engine::FileEntry],
+        pattern: &str,
+        opts: &SearchOpts,
+    ) -> Result<Vec<TextMatch>, crate::errors::EngineError> {
+        self.delegate
+            .search_inventory_entries(inventory, entries, pattern, opts)
+    }
+
+    fn search_inventory_entries_cancellable(
+        &self,
+        inventory: &ProjectInventory,
+        entries: &[crate::engine::FileEntry],
+        pattern: &str,
+        opts: &SearchOpts,
+        cancel: &crate::cancel::CancelToken,
+    ) -> Result<Vec<TextMatch>, crate::errors::EngineError> {
+        self.delegate
+            .search_inventory_entries_cancellable(inventory, entries, pattern, opts, cancel)
+    }
+
+    fn project_stats_with_capability_cancellable(
+        &self,
+        filesystem: &ProjectFilesystem,
+        cancel: &crate::cancel::CancelToken,
+    ) -> Result<ProjectStats, crate::errors::EngineError> {
+        self.delegate
+            .project_stats_with_capability_cancellable(filesystem, cancel)
+    }
 }
 
 fn end_turn_response() -> LlmResponse {

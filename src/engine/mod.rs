@@ -8,7 +8,6 @@ pub mod searcher;
 pub mod stats;
 pub mod walker;
 
-use std::collections::BTreeSet;
 use std::path::Path;
 
 use crate::cancel::CancelToken;
@@ -36,12 +35,7 @@ pub trait Engine: Send + Sync {
         root: &Path,
         opts: &DiscoverOpts,
         cancel: &CancelToken,
-    ) -> Result<Vec<FileEntry>, EngineError> {
-        ensure_not_cancelled(cancel)?;
-        let result = self.discover_files(root, opts)?;
-        ensure_not_cancelled(cancel)?;
-        Ok(result)
-    }
+    ) -> Result<Vec<FileEntry>, EngineError>;
 
     fn search_project_text(
         &self,
@@ -56,12 +50,7 @@ pub trait Engine: Send + Sync {
         pattern: &str,
         opts: &SearchOpts,
         cancel: &CancelToken,
-    ) -> Result<Vec<TextMatch>, EngineError> {
-        ensure_not_cancelled(cancel)?;
-        let result = self.search_project_text(filesystem, pattern, opts)?;
-        ensure_not_cancelled(cancel)?;
-        Ok(result)
-    }
+    ) -> Result<Vec<TextMatch>, EngineError>;
 
     fn search_inventory_text(
         &self,
@@ -76,13 +65,7 @@ pub trait Engine: Send + Sync {
         entries: &[FileEntry],
         pattern: &str,
         opts: &SearchOpts,
-    ) -> Result<Vec<TextMatch>, EngineError> {
-        let allowed_paths: BTreeSet<&Path> =
-            entries.iter().map(|entry| entry.path.as_path()).collect();
-        let mut matches = self.search_inventory_text(inventory, pattern, opts)?;
-        matches.retain(|found| allowed_paths.contains(found.path.as_path()));
-        Ok(matches)
-    }
+    ) -> Result<Vec<TextMatch>, EngineError>;
 
     fn search_inventory_entries_cancellable(
         &self,
@@ -91,12 +74,7 @@ pub trait Engine: Send + Sync {
         pattern: &str,
         opts: &SearchOpts,
         cancel: &CancelToken,
-    ) -> Result<Vec<TextMatch>, EngineError> {
-        ensure_not_cancelled(cancel)?;
-        let result = self.search_inventory_entries(inventory, entries, pattern, opts)?;
-        ensure_not_cancelled(cancel)?;
-        Ok(result)
-    }
+    ) -> Result<Vec<TextMatch>, EngineError>;
 
     fn read_project_file(
         &self,
@@ -118,19 +96,7 @@ pub trait Engine: Send + Sync {
         &self,
         filesystem: &ProjectFilesystem,
         cancel: &CancelToken,
-    ) -> Result<ProjectStats, EngineError> {
-        ensure_not_cancelled(cancel)?;
-        let result = self.project_stats_with_capability(filesystem)?;
-        ensure_not_cancelled(cancel)?;
-        Ok(result)
-    }
-}
-
-fn ensure_not_cancelled(cancel: &CancelToken) -> Result<(), EngineError> {
-    if cancel.is_cancelled() {
-        return Err(EngineError::Cancelled);
-    }
-    Ok(())
+    ) -> Result<ProjectStats, EngineError>;
 }
 
 pub struct DefaultEngine {
@@ -273,3 +239,8 @@ impl Engine for DefaultEngine {
         stats::project_stats_with_capability_cancellable(filesystem, &self.config, cancel)
     }
 }
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[path = "mod_tests.rs"]
+mod tests;

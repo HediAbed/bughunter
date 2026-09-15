@@ -139,20 +139,23 @@ fn the_archive_stages_the_binary_and_every_release_document() {
 
     assert_contains(
         &workflow,
-        r#"documents="$(make --no-print-directory print-release-documents)""#,
+        r#"documents="$(make --no-print-directory print-release-documents | tr ' ' '\n' | sed '/^$/d')""#,
     );
     assert_contains(
         &workflow,
         r#"install -Dm755 target/release/bughunter "$staging/bughunter""#,
     );
-    assert_contains(&workflow, "for document in $documents; do");
+    assert_contains(
+        &workflow,
+        r#"printf '%s\n' "$documents" | while IFS= read -r document; do"#,
+    );
     assert_contains(
         &workflow,
         r#"install -Dm644 "$document" "$staging/$document""#,
     );
     assert_contains(
         &workflow,
-        r#"printf '%s\n' bughunter $documents | LC_ALL=C sort > "$RUNNER_TEMP/archive-expected.txt""#,
+        r#"{ printf '%s\n' bughunter; printf '%s\n' "$documents"; } | LC_ALL=C sort > "$RUNNER_TEMP/archive-expected.txt""#,
     );
     assert_contains(
         &workflow,
@@ -266,10 +269,13 @@ fn the_sbom_is_sanitized_and_regenerated_for_comparison() {
     );
     assert_contains(&workflow, "jq -S --arg root");
     assert_contains(&workflow, "del(.metadata.timestamp, .serialNumber)");
-    assert_contains(&workflow, "! grep -q 'path+file:' bughunter.cdx.json");
     assert_contains(
         &workflow,
-        r#"! grep -qF "$GITHUB_WORKSPACE" bughunter.cdx.json"#,
+        "if grep -q 'path+file:' bughunter.cdx.json; then",
+    );
+    assert_contains(
+        &workflow,
+        r#"if grep -qF "$GITHUB_WORKSPACE" bughunter.cdx.json; then"#,
     );
     assert_contains(
         &workflow,
