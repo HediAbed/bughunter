@@ -210,19 +210,26 @@ mod tests {
     }
 
     #[test]
-    fn a_cancelled_selection_stops_partway_through_the_entries() {
+    fn a_scoped_selection_keeps_allowed_entries_until_it_is_cancelled() {
         let directory = TempDir::new().unwrap();
         std::fs::write(directory.path().join("one.rs"), "fn one() {}\n").unwrap();
+        std::fs::write(directory.path().join("two.rs"), "fn two() {}\n").unwrap();
         let inventory =
             ProjectInventory::build(directory.path(), &EngineConfig::default()).unwrap();
-        let allowed: BTreeSet<String> = inventory
-            .files()
-            .iter()
-            .map(|entry| entry.relative_path.clone())
-            .collect();
+        let allowed: BTreeSet<String> = ["one.rs".to_string()].into_iter().collect();
         let cancel = CancelToken::default();
-        cancel.cancel();
 
+        let selected = inventory
+            .select_allowed_cancellable(Some(&allowed), &cancel)
+            .expect("a live scan must select the allowed entries");
+        let selected_paths: Vec<&str> = selected
+            .iter()
+            .map(|entry| entry.relative_path.as_str())
+            .collect();
+
+        assert_eq!(selected_paths, ["one.rs"]);
+
+        cancel.cancel();
         let error = inventory
             .select_allowed_cancellable(Some(&allowed), &cancel)
             .expect_err("a cancelled scan must not keep selecting entries");

@@ -617,6 +617,38 @@ mod tests {
     }
 
     #[test]
+    fn an_ai_run_without_its_backend_binary_fails_through_the_async_path() {
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(
+            project.path().join("main.py"),
+            "def main():\n    return 1\n",
+        )
+        .unwrap();
+        let mut raw = config::schema::Config::default();
+        raw.llm.backend = config::schema::BackendConfig::ClaudeCli {
+            binary: project
+                .path()
+                .join("missing-claude-binary")
+                .to_string_lossy()
+                .into_owned(),
+        };
+        raw.llm.model = "claude-test".into();
+        let prepared = PreparedAnalysis {
+            project_root: ProjectRoot::open(project.path()).unwrap(),
+            backend_working_directory: ProjectRoot::open(project.path()).unwrap(),
+            config: config::ValidatedConfig::new(raw, AnalysisMode::AiOnly).unwrap(),
+            review_session: None,
+        };
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let cancel = crate::cancel::CancelToken::default();
+
+        let error = execute_cancellable(&runtime, &prepared, shared_state(), false, &cancel)
+            .expect_err("a missing backend binary must fail the run");
+
+        assert!(!error.to_string().is_empty());
+    }
+
+    #[test]
     fn changed_file_coverage_errors_and_empty_sets_are_rejected() {
         let mut scope = review_scope(BTreeMap::new());
         let error = apply_changed_file_coverage(
