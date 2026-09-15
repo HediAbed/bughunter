@@ -73,6 +73,23 @@ fn analyze_with_output_file_writes_report_and_stderr_note() {
 }
 
 #[test]
+fn analyze_reports_an_unwritable_destination_instead_of_succeeding() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("app.py"), "# TODO: later\n").unwrap();
+    let unreachable = dir.path().join("missing").join("report.json");
+
+    bughunter()
+        .args(["analyze", "--static-only"])
+        .args(["--project", dir.path().to_str().unwrap()])
+        .args(["--output", unreachable.to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("report.json"));
+
+    assert!(!unreachable.exists());
+}
+
+#[test]
 fn analyze_defaults_to_local_static_mode() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("app.py"), "x = 1\n").unwrap();

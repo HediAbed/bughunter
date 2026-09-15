@@ -2063,6 +2063,46 @@ async fn successful_full_runs_finish_with_the_authoritative_finding_total() {
 
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_run_whose_terminal_never_starts_reports_the_failure_and_stops() {
+    let project = TempDir::new().unwrap();
+    fs::write(project.path().join("app.rs"), "fn app() {}\n").unwrap();
+    let cli = TempDir::new().unwrap();
+    let mut raw = Config::default();
+    raw.llm.backend = BackendConfig::ClaudeCli {
+        binary: recording_claude_binary(cli.path(), "app.rs"),
+    };
+    raw.llm.model = "claude-test".into();
+    let config = ValidatedConfig::new(raw, AnalysisMode::Full).unwrap();
+    let state = crate::tui::shared_state();
+
+    let error = run_analysis_with_terminal(
+        project.path(),
+        Some(project.path()),
+        &config,
+        state.clone(),
+        true,
+        None,
+        crate::cancel::CancelToken::default(),
+        &mut |_, _| Err(std::io::Error::other("no terminal attached")),
+    )
+    .await
+    .expect_err("a terminal that never starts must fail the run");
+
+    match error {
+        BugHunterError::Analysis(crate::errors::AnalysisError::TerminalFailed {
+            action,
+            source,
+        }) => {
+            assert_eq!(action, "start");
+            assert_eq!(source.to_string(), "no terminal attached");
+        }
+        other => panic!("expected a terminal failure, got {other}"),
+    }
+    assert_eq!(state.lock().phase, crate::tui::Phase::Failed);
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn failed_ai_runs_never_render_as_finished() {
     let project = TempDir::new().unwrap();
     fs::write(project.path().join("app.rs"), "fn app() {}\n").unwrap();

@@ -223,12 +223,36 @@ pub async fn run_analysis(
     review: Option<&crate::review::ReviewScope>,
     cancel: crate::cancel::CancelToken,
 ) -> Result<AnalysisResult, BugHunterError> {
+    run_analysis_with_terminal(
+        project_root,
+        backend_working_directory,
+        config,
+        state,
+        use_tui,
+        review,
+        cancel,
+        &mut Tui::start,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_analysis_with_terminal(
+    project_root: &Path,
+    backend_working_directory: Option<&Path>,
+    config: &ValidatedConfig,
+    state: crate::tui::SharedState,
+    use_tui: bool,
+    review: Option<&crate::review::ReviewScope>,
+    cancel: crate::cancel::CancelToken,
+    start_terminal: &mut dyn FnMut(
+        crate::tui::SharedState,
+        crate::cancel::CancelToken,
+    ) -> std::io::Result<Tui>,
+) -> Result<AnalysisResult, BugHunterError> {
     let mode = config.mode();
     let reporter = Reporter::new(state.clone());
-    if let Err(error) = ensure_not_cancelled(&cancel) {
-        report_failed_outcome(&reporter, &error);
-        return Err(error);
-    }
+    reporting_failures(&reporter, ensure_not_cancelled(&cancel))?;
 
     let owned_project_root = project_root.to_path_buf();
     let owned_config = config.clone();
@@ -246,10 +270,9 @@ pub async fn run_analysis(
     info!(backend = ?config.llm.backend, "starting AI-powered analysis");
 
     let system_prompt = build_analysis_prompt(config, review);
-    let mut start_terminal = Tui::start;
     let tui = reporting_failures(
         &reporter,
-        start_tui(use_tui, &state, &cancel, &mut start_terminal),
+        start_tui(use_tui, &state, &cancel, start_terminal),
     )?;
     let ai_result = run_ai_analysis(AiRequest {
         config,
