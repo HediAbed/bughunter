@@ -2102,6 +2102,64 @@ async fn a_run_whose_terminal_never_starts_reports_the_failure_and_stops() {
 }
 
 #[cfg(unix)]
+#[test]
+fn a_run_on_a_real_terminal_finishes_and_restores_the_screen() {
+    if !Path::new("/usr/bin/script").is_file() {
+        return;
+    }
+
+    let child = format!(
+        "{} --exact orchestrator::tests::a_live_terminal_run_finishes_and_stops_its_interface --ignored --nocapture",
+        std::env::current_exe().unwrap().display()
+    );
+    let output = std::process::Command::new("/usr/bin/script")
+        .args(["-qec", &child, "/dev/null"])
+        .env_remove("CI")
+        .output()
+        .unwrap();
+    let rendered = String::from_utf8_lossy(&output.stdout);
+
+    assert!(output.status.success(), "{rendered}");
+    assert!(rendered.contains("\u{1b}[?1049h"), "{rendered}");
+    assert!(rendered.contains("\u{1b}[?1049l"), "{rendered}");
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore]
+async fn a_live_terminal_run_finishes_and_stops_its_interface() {
+    let project = TempDir::new().unwrap();
+    fs::write(
+        project.path().join("app.rs"),
+        "// TODO: deterministic finding\nfn app() {}\n",
+    )
+    .unwrap();
+    let cli = TempDir::new().unwrap();
+    let mut raw = Config::default();
+    raw.llm.backend = BackendConfig::ClaudeCli {
+        binary: recording_claude_binary(cli.path(), "app.rs"),
+    };
+    raw.llm.model = "claude-test".into();
+    let config = ValidatedConfig::new(raw, AnalysisMode::Full).unwrap();
+    let state = crate::tui::shared_state();
+
+    let result = run_analysis(
+        project.path(),
+        Some(project.path()),
+        &config,
+        state.clone(),
+        true,
+        None,
+        crate::cancel::CancelToken::default(),
+    )
+    .await
+    .expect("a run on a live terminal must finish");
+
+    assert!(!result.findings.is_empty());
+    assert_eq!(state.lock().phase, crate::tui::Phase::Finished);
+}
+
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn failed_ai_runs_never_render_as_finished() {
     let project = TempDir::new().unwrap();
