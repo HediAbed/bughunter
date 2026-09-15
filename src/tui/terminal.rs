@@ -135,6 +135,22 @@ impl Drop for Tui {
     }
 }
 
+async fn run_render_loop(
+    draw_frame: &mut (dyn FnMut() -> io::Result<()> + Send),
+    stop: &AtomicBool,
+    cancel: &CancelToken,
+) -> io::Result<()> {
+    let mut ticker = tokio::time::interval(RENDER_INTERVAL);
+    while !stop.load(Ordering::Acquire) {
+        ticker.tick().await;
+        if let Err(error) = draw_frame() {
+            cancel.cancel();
+            return Err(error);
+        }
+    }
+    draw_frame()
+}
+
 fn spawn_render_loop(
     mut terminal: TuiTerminal,
     state: SharedState,
@@ -142,15 +158,8 @@ fn spawn_render_loop(
     cancel: CancelToken,
 ) -> tokio::task::JoinHandle<io::Result<()>> {
     tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(RENDER_INTERVAL);
-        while !stop.load(Ordering::Acquire) {
-            ticker.tick().await;
-            if let Err(error) = draw(&mut terminal, &state) {
-                cancel.cancel();
-                return Err(error);
-            }
-        }
-        draw(&mut terminal, &state)
+        let mut draw_frame = || draw(&mut terminal, &state);
+        run_render_loop(&mut draw_frame, &stop, &cancel).await
     })
 }
 
@@ -178,10 +187,18 @@ fn run_input_loop(
 }
 
 fn poll_action(timeout: Duration) -> io::Result<Action> {
-    if !event::poll(timeout)? {
+    poll_action_with(timeout, &mut event::poll, &mut event::read)
+}
+
+fn poll_action_with(
+    timeout: Duration,
+    poll: &mut dyn FnMut(Duration) -> io::Result<bool>,
+    read: &mut dyn FnMut() -> io::Result<Event>,
+) -> io::Result<Action> {
+    if !poll(timeout)? {
         return Ok(Action::Ignore);
     }
-    Ok(action_for(&event::read()?))
+    Ok(action_for(&read()?))
 }
 
 fn action_for(event: &Event) -> Action {
@@ -207,15 +224,29 @@ fn setup_terminal() -> io::Result<(TuiTerminal, TerminalSession)> {
     let mut enter_screen = || execute!(io::stderr(), EnterAlternateScreen);
     let mut hide_cursor = || execute!(io::stderr(), Hide);
     let mut create_terminal = || Terminal::new(CrosstermBackend::new(io::stderr()));
+    setup_terminal_with_backend(
+        &mut enable,
+        &mut enter_screen,
+        &mut hide_cursor,
+        &mut create_terminal,
+    )
+}
+
+fn setup_terminal_with_backend(
+    enable: &mut dyn FnMut() -> io::Result<()>,
+    enter_screen: &mut dyn FnMut() -> io::Result<()>,
+    hide_cursor: &mut dyn FnMut() -> io::Result<()>,
+    create_terminal: &mut dyn FnMut() -> io::Result<TuiTerminal>,
+) -> io::Result<(TuiTerminal, TerminalSession)> {
     let mut rollback = |state| {
         let mut session = TerminalSession { state };
         let _ = session.restore();
     };
     let (terminal, state) = setup_terminal_with(
-        &mut enable,
-        &mut enter_screen,
-        &mut hide_cursor,
-        &mut create_terminal,
+        enable,
+        enter_screen,
+        hide_cursor,
+        create_terminal,
         &mut rollback,
     )?;
     Ok((terminal, TerminalSession { state }))
@@ -304,14 +335,19 @@ fn draw(terminal: &mut TuiTerminal, state: &SharedState) -> io::Result<()> {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::{
-        Action, INPUT_POLL_INTERVAL, TerminalState, action_for, restore_state_with, run_input_loop,
-        setup_terminal_with,
+        Action, INPUT_POLL_INTERVAL, TerminalSession, TerminalState, Tui, action_for, poll_action,
+        poll_action_with, restore_state_with, run_input_loop, run_render_loop, setup_terminal,
+        setup_terminal_with, setup_terminal_with_backend, spawn_input_loop, spawn_render_loop,
     };
+    use ratatui::Terminal;
+    use ratatui::backend::CrosstermBackend;
     use ratatui::crossterm::event::{
         Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, MouseButton,
         MouseEvent, MouseEventKind,
     };
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
 
     fn key(code: KeyCode, modifiers: KeyModifiers) -> Event {
         Event::Key(KeyEvent {
@@ -497,29 +533,407 @@ mod tests {
     }
 
     #[test]
-    fn restoration_attempts_every_active_transition_and_keeps_failed_ones_active() {
-        let mut state = TerminalState::new(true, true, true);
-        let events = std::cell::RefCell::new(Vec::new());
+    fn restoration_attempts_active_steps_in_order_keeps_failures_and_reports_the_first_error() {
+        let names = ["raw", "screen", "cursor"];
 
-        let error = restore_state_with(
-            &mut state,
-            &mut || {
-                events.borrow_mut().push("raw");
-                Err(std::io::Error::other("raw restore failed"))
-            },
-            &mut || {
-                events.borrow_mut().push("screen");
-                Ok(())
-            },
-            &mut || {
-                events.borrow_mut().push("cursor");
-                Err(std::io::Error::other("cursor restore failed"))
-            },
+        for state_bits in 0..8u8 {
+            for failure_mask in 0..8u8 {
+                let active = [
+                    state_bits & 1 != 0,
+                    state_bits & 2 != 0,
+                    state_bits & 4 != 0,
+                ];
+                let failed = [
+                    failure_mask & 1 != 0,
+                    failure_mask & 2 != 0,
+                    failure_mask & 4 != 0,
+                ];
+                let mut state = TerminalState::new(active[0], active[1], active[2]);
+                let attempts = std::cell::RefCell::new(Vec::new());
+
+                let result = restore_state_with(
+                    &mut state,
+                    &mut || {
+                        attempts.borrow_mut().push("raw");
+                        (!failed[0])
+                            .then_some(())
+                            .ok_or_else(|| std::io::Error::other("raw restore failed"))
+                    },
+                    &mut || {
+                        attempts.borrow_mut().push("screen");
+                        (!failed[1])
+                            .then_some(())
+                            .ok_or_else(|| std::io::Error::other("screen restore failed"))
+                    },
+                    &mut || {
+                        attempts.borrow_mut().push("cursor");
+                        (!failed[2])
+                            .then_some(())
+                            .ok_or_else(|| std::io::Error::other("cursor restore failed"))
+                    },
+                );
+
+                let expected_attempts: Vec<&str> = names
+                    .into_iter()
+                    .zip(active)
+                    .filter_map(|(name, active)| active.then_some(name))
+                    .collect();
+                assert_eq!(
+                    attempts.borrow().as_slice(),
+                    expected_attempts.as_slice(),
+                    "only active steps are attempted, in order: state {state_bits:03b} mask {failure_mask:03b}"
+                );
+                assert_eq!(
+                    state,
+                    TerminalState::new(
+                        active[0] && failed[0],
+                        active[1] && failed[1],
+                        active[2] && failed[2],
+                    ),
+                    "failed steps stay active for a later retry: state {state_bits:03b} mask {failure_mask:03b}"
+                );
+                match (0..3).find(|&index| active[index] && failed[index]) {
+                    Some(index) => assert_eq!(
+                        result.unwrap_err().to_string(),
+                        format!("{} restore failed", names[index]),
+                        "the first failure wins: state {state_bits:03b} mask {failure_mask:03b}"
+                    ),
+                    None => assert!(
+                        result.is_ok(),
+                        "nothing failed: state {state_bits:03b} mask {failure_mask:03b}"
+                    ),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_poll_without_an_event_is_ignored_without_reading() {
+        let action = poll_action_with(Duration::ZERO, &mut |_| Ok(false), &mut || {
+            panic!("no event is read when polling reports none")
+        })
+        .unwrap();
+
+        assert_eq!(action, Action::Ignore);
+    }
+
+    #[test]
+    fn poll_and_read_failures_are_propagated() {
+        let error = poll_action_with(
+            Duration::ZERO,
+            &mut |_| Err(std::io::Error::other("terminal lost")),
+            &mut || panic!("a failed poll must not read"),
         )
         .unwrap_err();
+        assert_eq!(error.to_string(), "terminal lost");
 
-        assert_eq!(error.to_string(), "raw restore failed");
-        assert_eq!(*events.borrow(), ["raw", "screen", "cursor"]);
-        assert_eq!(state, TerminalState::new(true, false, true));
+        let error = poll_action_with(Duration::ZERO, &mut |_| Ok(true), &mut || {
+            Err(std::io::Error::other("event stream closed"))
+        })
+        .unwrap_err();
+        assert_eq!(error.to_string(), "event stream closed");
+    }
+
+    #[test]
+    fn a_polled_cancel_key_cancels() {
+        let action = poll_action_with(Duration::ZERO, &mut |_| Ok(true), &mut || {
+            Ok(key(KeyCode::Char('q'), KeyModifiers::NONE))
+        })
+        .unwrap();
+
+        assert_eq!(action, Action::Cancel);
+    }
+
+    #[test]
+    fn polling_the_real_terminal_never_invents_a_cancel() {
+        let action = poll_action(Duration::ZERO);
+
+        assert!(!matches!(action, Ok(Action::Cancel)), "{action:?}");
+    }
+
+    #[tokio::test]
+    async fn a_render_loop_draw_failure_cancels_the_scan() {
+        let cancel = crate::cancel::CancelToken::default();
+        let stop = AtomicBool::new(false);
+
+        let error = run_render_loop(
+            &mut || Err(std::io::Error::other("frame write failed")),
+            &stop,
+            &cancel,
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(error.to_string(), "frame write failed");
+        assert!(cancel.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn a_stopped_render_loop_draws_one_final_frame_without_cancelling() {
+        let cancel = crate::cancel::CancelToken::default();
+        let stop = AtomicBool::new(true);
+        let draws = AtomicBool::new(false);
+
+        run_render_loop(
+            &mut || {
+                draws.store(true, Ordering::Relaxed);
+                Ok(())
+            },
+            &stop,
+            &cancel,
+        )
+        .await
+        .unwrap();
+
+        assert!(draws.load(Ordering::Relaxed));
+        assert!(!cancel.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn a_render_loop_draws_until_it_is_stopped() {
+        let cancel = crate::cancel::CancelToken::default();
+        let stop = AtomicBool::new(false);
+        let draws = std::sync::atomic::AtomicUsize::new(0);
+
+        run_render_loop(
+            &mut || {
+                draws.fetch_add(1, Ordering::Relaxed);
+                stop.store(true, Ordering::Relaxed);
+                Ok(())
+            },
+            &stop,
+            &cancel,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(draws.load(Ordering::Relaxed), 2);
+        assert!(!cancel.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn a_spawned_render_loop_stopped_up_front_draws_once_without_cancelling() {
+        let terminal = Terminal::new(CrosstermBackend::new(std::io::stderr())).unwrap();
+        let stop = Arc::new(AtomicBool::new(true));
+        let cancel = crate::cancel::CancelToken::default();
+
+        let render_loop =
+            spawn_render_loop(terminal, crate::tui::shared_state(), stop, cancel.clone());
+        let outcome = render_loop
+            .await
+            .expect("the render task must finish instead of hanging");
+
+        drop(outcome);
+        assert!(
+            !cancel.is_cancelled(),
+            "a loop stopped before its first tick never cancels the scan"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_spawned_input_loop_stopped_up_front_exits_without_cancelling() {
+        let cancel = crate::cancel::CancelToken::default();
+        let stop = Arc::new(AtomicBool::new(true));
+
+        let input_loop = spawn_input_loop(cancel.clone(), stop);
+        input_loop
+            .await
+            .expect("the input task must finish instead of hanging");
+
+        assert!(!cancel.is_cancelled());
+    }
+
+    #[test]
+    fn restoring_an_idle_session_attempts_nothing() {
+        let mut session = TerminalSession {
+            state: TerminalState::default(),
+        };
+
+        session.restore().unwrap();
+
+        assert_eq!(session.state, TerminalState::default());
+    }
+
+    #[test]
+    fn restoring_a_session_leaves_the_alternate_screen_and_shows_the_cursor() {
+        let mut session = TerminalSession {
+            state: TerminalState::new(false, true, true),
+        };
+
+        session.restore().unwrap();
+
+        assert_eq!(session.state, TerminalState::default());
+    }
+
+    #[test]
+    fn restoring_a_session_disables_raw_mode() {
+        let mut session = TerminalSession {
+            state: TerminalState::new(true, false, false),
+        };
+
+        session.restore().unwrap();
+
+        assert_eq!(session.state, TerminalState::default());
+    }
+
+    fn tui_with_loops(
+        render_loop: Option<tokio::task::JoinHandle<std::io::Result<()>>>,
+        input_loop: Option<tokio::task::JoinHandle<()>>,
+    ) -> Tui {
+        Tui {
+            stop: Arc::new(AtomicBool::new(false)),
+            render_loop,
+            input_loop,
+            session: Some(TerminalSession {
+                state: TerminalState::default(),
+            }),
+        }
+    }
+
+    #[tokio::test]
+    async fn stop_signals_the_loops_and_restores_the_session() {
+        let tui = tui_with_loops(
+            Some(tokio::spawn(async { Ok(()) })),
+            Some(tokio::spawn(async {})),
+        );
+        let stop = tui.stop.clone();
+
+        tui.stop().await.unwrap();
+
+        assert!(stop.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn stopping_a_tui_without_loops_only_sets_the_stop_flag() {
+        let mut tui = tui_with_loops(None, None);
+        tui.session = None;
+        let stop = tui.stop.clone();
+
+        tui.stop().await.unwrap();
+
+        assert!(stop.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn stop_reports_an_input_loop_that_died() {
+        let input_loop = tokio::spawn(std::future::pending::<()>());
+        input_loop.abort();
+        let tui = tui_with_loops(Some(tokio::spawn(async { Ok(()) })), Some(input_loop));
+
+        let error = tui.stop().await.unwrap_err();
+
+        assert!(
+            error.to_string().starts_with("TUI input task failed: "),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stop_reports_a_render_loop_that_died() {
+        let render_loop = tokio::spawn(std::future::pending::<std::io::Result<()>>());
+        render_loop.abort();
+        let tui = tui_with_loops(Some(render_loop), Some(tokio::spawn(async {})));
+
+        let error = tui.stop().await.unwrap_err();
+
+        assert!(
+            error.to_string().starts_with("TUI render task failed: "),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stop_propagates_a_draw_failure_from_the_render_loop() {
+        let tui = tui_with_loops(
+            Some(tokio::spawn(async {
+                Err(std::io::Error::other("frame write failed"))
+            })),
+            Some(tokio::spawn(async {})),
+        );
+
+        let error = tui.stop().await.unwrap_err();
+
+        assert_eq!(error.to_string(), "frame write failed");
+    }
+
+    #[tokio::test]
+    async fn stop_reports_the_earliest_failure_when_several_steps_fail() {
+        let input_loop = tokio::spawn(std::future::pending::<()>());
+        input_loop.abort();
+        let tui = tui_with_loops(
+            Some(tokio::spawn(async {
+                Err(std::io::Error::other("frame write failed"))
+            })),
+            Some(input_loop),
+        );
+
+        let error = tui.stop().await.unwrap_err();
+
+        assert!(
+            error.to_string().starts_with("TUI input task failed: "),
+            "the input loop fails first: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn dropping_a_tui_stops_and_aborts_its_loops() {
+        let tui = tui_with_loops(
+            Some(tokio::spawn(std::future::pending::<std::io::Result<()>>())),
+            Some(tokio::spawn(std::future::pending::<()>())),
+        );
+        let stop = tui.stop.clone();
+
+        drop(tui);
+
+        assert!(stop.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn setup_either_fails_before_creating_a_terminal_or_yields_an_active_session() {
+        match setup_terminal() {
+            Ok((_terminal, session)) => {
+                assert_eq!(session.state, TerminalState::new(true, true, true));
+            }
+            Err(error) => {
+                assert!(!error.to_string().is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn setup_with_backend_propagates_a_stage_failure_and_returns_active_state_on_success() {
+        let mut create_terminal = || Terminal::new(CrosstermBackend::new(std::io::stderr()));
+
+        let outcome = setup_terminal_with_backend(
+            &mut || Err(std::io::Error::other("raw mode unavailable")),
+            &mut || Ok(()),
+            &mut || Ok(()),
+            &mut create_terminal,
+        );
+        let error = match outcome {
+            Ok(_) => panic!("a failed stage must not produce a terminal"),
+            Err(error) => error,
+        };
+        assert_eq!(error.to_string(), "raw mode unavailable");
+
+        let (_terminal, session) = setup_terminal_with_backend(
+            &mut || Ok(()),
+            &mut || Ok(()),
+            &mut || Ok(()),
+            &mut create_terminal,
+        )
+        .unwrap();
+        assert_eq!(session.state, TerminalState::new(true, true, true));
+    }
+
+    #[tokio::test]
+    async fn starting_a_tui_either_fails_before_spawning_loops_or_stops_cleanly() {
+        match Tui::start(
+            crate::tui::shared_state(),
+            crate::cancel::CancelToken::default(),
+        ) {
+            Ok(tui) => tui.stop().await.unwrap(),
+            Err(error) => assert!(!error.to_string().is_empty()),
+        }
     }
 }

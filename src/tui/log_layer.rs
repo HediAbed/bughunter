@@ -131,6 +131,31 @@ mod tests {
     }
 
     #[test]
+    fn a_replay_to_a_failing_stream_surfaces_the_write_error() {
+        struct RefusingStream;
+
+        impl Write for RefusingStream {
+            fn write(&mut self, _buffer: &[u8]) -> io::Result<usize> {
+                Err(io::Error::from(io::ErrorKind::BrokenPipe))
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let state: SharedState = Arc::new(Mutex::new(ScanState::new()));
+        state
+            .lock()
+            .push_log(tracing::Level::INFO, "unreachable reader".into());
+
+        let error = replay_logs(&state, &mut RefusingStream)
+            .expect_err("a broken stream must surface its write error");
+
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+    }
+
+    #[test]
     fn events_record_the_message_and_level() {
         let logs = capture(|| tracing::info!("analyzing shard"));
 

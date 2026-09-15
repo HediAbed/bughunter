@@ -115,7 +115,7 @@ fn inventory_entry_search_restricts_results_to_the_named_entries() {
         .search_inventory_entries(&inventory, &only_alpha, "fn ", &search_options())
         .unwrap();
     let everything = engine
-        .search_inventory_text(&inventory, "fn ", &search_options())
+        .search_inventory_entries(&inventory, inventory.files(), "fn ", &search_options())
         .unwrap();
 
     assert_eq!(scoped.len(), 1);

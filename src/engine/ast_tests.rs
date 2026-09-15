@@ -346,6 +346,42 @@ fn ast_search_returns_error_for_bad_query() {
 }
 
 #[test]
+fn cancellable_ast_search_matches_the_plain_search_and_honours_cancellation() {
+    let query = "(function_item name: (identifier) @name) @def";
+
+    let plain = search_ast(Path::new("test.rs"), RUST_CODE, "rust", query, usize::MAX).unwrap();
+    let live = search_ast_cancellable(
+        Path::new("test.rs"),
+        RUST_CODE,
+        "rust",
+        query,
+        usize::MAX,
+        &CancelToken::default(),
+    )
+    .unwrap();
+
+    assert_eq!(live.len(), plain.len());
+    assert!(
+        live.iter()
+            .any(|m| m.matched_code.contains("helper_function"))
+    );
+
+    let cancelled = CancelToken::default();
+    cancelled.cancel();
+    let error = search_ast_cancellable(
+        Path::new("test.rs"),
+        RUST_CODE,
+        "rust",
+        query,
+        usize::MAX,
+        &cancelled,
+    )
+    .unwrap_err();
+
+    assert!(matches!(error, EngineError::Cancelled));
+}
+
+#[test]
 fn handles_empty_file() {
     let sigs = extract_signatures(Path::new("empty.rs"), "", "rust").unwrap();
     assert!(sigs.is_empty());

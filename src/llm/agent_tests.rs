@@ -248,16 +248,6 @@ impl Engine for StallingReadEngine {
         self.delegate.search_project_text(filesystem, pattern, opts)
     }
 
-    fn search_inventory_text(
-        &self,
-        inventory: &ProjectInventory,
-        pattern: &str,
-        opts: &SearchOpts,
-    ) -> Result<Vec<TextMatch>, crate::errors::EngineError> {
-        self.delegate
-            .search_inventory_text(inventory, pattern, opts)
-    }
-
     fn read_project_file(
         &self,
         filesystem: &ProjectFilesystem,
@@ -1226,6 +1216,31 @@ fn submission_response(tool_use_id: &str, file: &str, count: usize) -> LlmRespon
     response
 }
 
+fn oversized_submission_response(tool_use_id: &str, file: &str) -> (LlmResponse, usize) {
+    let count = MAX_FINDING_BYTES_PER_RUN / crate::llm::tools::MAX_FINDING_DESCRIPTION_BYTES + 1;
+    assert!(
+        count <= crate::llm::tools::MAX_FINDINGS_PER_SUBMISSION,
+        "the run byte budget must be exceedable within a single submission"
+    );
+    let findings: Vec<serde_json::Value> = (0..count)
+        .map(|index| {
+            json!({
+                "category": "bug",
+                "severity": "high",
+                "title": format!("issue {tool_use_id} {index}"),
+                "description": "d".repeat(crate::llm::tools::MAX_FINDING_DESCRIPTION_BYTES),
+                "file": file,
+                "confidence": "high"
+            })
+        })
+        .collect();
+    let mut response = tool_use_response(crate::llm::tools::SUBMIT_FINDINGS, tool_use_id);
+    if let ContentBlock::ToolUse { tool_use } = &mut response.output.message.content[0] {
+        tool_use.input = json!({ "findings": findings });
+    }
+    (response, count)
+}
+
 fn tool_result_errors(messages: &[Message]) -> Vec<String> {
     messages
         .iter()
@@ -1345,6 +1360,45 @@ async fn a_refused_exploration_submission_is_recovered_in_the_final_turn() {
         findings.len(),
         5,
         "the refused findings must be recoverable in the final submission"
+    );
+}
+
+#[tokio::test]
+async fn an_oversized_submission_is_rejected_without_recording_and_recovered_in_the_final_turn() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("x.rs"), "fn x() {}\n").unwrap();
+    let (oversized, rejected_count) = oversized_submission_response("call-1", "x.rs");
+    let backend = scripted(vec![
+        oversized,
+        end_turn_response(),
+        empty_submission_response("call-2"),
+    ]);
+    let engine = DefaultEngine::new(EngineConfig::default());
+    let counter = FindingCounter::new();
+    let inventory = ProjectInventory::build(tmp.path(), &EngineConfig::default()).unwrap();
+
+    let findings = {
+        let mut loop_state =
+            test_agent_loop(backend.as_ref(), &engine, &inventory, &counter, 180_000, 10);
+        loop_state.run("SYS", "MAP").await.unwrap()
+    };
+
+    assert_eq!(backend.call_count(), 3);
+    assert!(
+        findings.is_empty(),
+        "a rejected submission must record nothing"
+    );
+    let rejections = tool_result_errors(&backend.last_messages());
+    assert_eq!(rejections.len(), 1, "{rejections:?}");
+    assert!(
+        rejections[0].contains(&format!("Rejected all {rejected_count} findings")),
+        "{}",
+        rejections[0]
+    );
+    assert!(
+        rejections[0].contains("none from this call were recorded"),
+        "{}",
+        rejections[0]
     );
 }
 

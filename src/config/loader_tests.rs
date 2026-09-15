@@ -180,6 +180,59 @@ fn merges_solid_config() {
 }
 
 #[test]
+fn an_explicit_config_without_an_output_path_preserves_the_default() {
+    let dir = TempDir::new().unwrap();
+    let custom = dir.path().join("custom.toml");
+    fs::write(&custom, "[general]\nlog_level = \"debug\"\n").unwrap();
+
+    let config = load(dir.path(), Some(&custom)).unwrap();
+
+    assert_eq!(config.general.output_path, None);
+    assert_eq!(config.general.log_level, LogLevel::Debug);
+}
+
+#[test]
+fn quality_thresholds_merge_preserves_unspecified_fields() {
+    let dir = TempDir::new().unwrap();
+    fs::write(
+        dir.path().join(".bughunter.toml"),
+        "[analysis.quality]\nmax_file_lines = 300\n",
+    )
+    .unwrap();
+
+    let config = load(dir.path(), None).unwrap();
+
+    assert_eq!(config.analysis.quality.max_file_lines, 300);
+    assert_eq!(
+        config.analysis.quality.max_function_lines,
+        QualityThresholds::default().max_function_lines
+    );
+}
+
+#[test]
+fn solid_flags_merge_preserves_unspecified_fields() {
+    let dir = TempDir::new().unwrap();
+    fs::write(
+        dir.path().join(".bughunter.toml"),
+        "[analysis.solid]\ncheck_ocp = false\n",
+    )
+    .unwrap();
+
+    let config = load(dir.path(), None).unwrap();
+
+    assert!(config.analysis.solid.check_srp);
+    assert!(!config.analysis.solid.check_ocp);
+}
+
+#[test]
+fn duplicate_categories_are_kept_once() {
+    assert_eq!(
+        parse_categories("bug, BUG,quality,bug").unwrap(),
+        vec![AnalysisCategory::Bug, AnalysisCategory::Quality]
+    );
+}
+
+#[test]
 fn default_backend_is_claude_cli() {
     let dir = TempDir::new().unwrap();
     let config = load(dir.path(), None).unwrap();
@@ -396,6 +449,46 @@ fn category_env_values_accept_comma_delimited_lists() {
     assert!(parse_categories("quality,unknown").is_err());
 }
 
+#[cfg(unix)]
+#[test]
+fn non_unicode_environment_values_are_rejected_with_a_clear_error() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "config::loader::tests::a_non_unicode_api_token_in_the_environment_fails_loading",
+            "--ignored",
+        ])
+        .env("BUGHUNTER_API_TOKEN", std::ffi::OsStr::from_bytes(b"\xff"))
+        .env_remove("BUGHUNTER_BACKEND")
+        .env_remove("BUGHUNTER_CLAUDE_CLI_BINARY")
+        .env_remove("BUGHUNTER_API_URL")
+        .env_remove("BUGHUNTER_MODEL")
+        .env_remove("BUGHUNTER_MAX_CONTEXT_TOKENS")
+        .env_remove("BUGHUNTER_MAX_SHARD_SECONDS")
+        .env_remove("BUGHUNTER_LOG_LEVEL")
+        .env_remove("BUGHUNTER_CATEGORIES")
+        .status()
+        .unwrap();
+
+    assert!(status.success());
+}
+
+#[cfg(unix)]
+#[test]
+#[ignore]
+fn a_non_unicode_api_token_in_the_environment_fails_loading() {
+    let dir = TempDir::new().unwrap();
+
+    let error = load(dir.path(), None).unwrap_err();
+
+    assert!(matches!(
+        error,
+        ConfigError::InvalidValue { ref field, ref reason }
+            if field == "BUGHUNTER_API_TOKEN" && reason.contains("Unicode")
+    ));
+}
 #[test]
 fn log_level_env_values_parse_case_insensitively() {
     assert!(matches!(parse_log_level("TRACE"), Ok(LogLevel::Trace)));

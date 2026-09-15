@@ -1290,6 +1290,27 @@ deleted file mode 100644\n\
     }
 
     #[test]
+    fn hunks_with_unparsable_new_side_ranges_are_dropped() {
+        let diff = "--- a/x\n+++ b/x\n@@ -1 +abc @@\n+a\n@@ -1 +2,xyz @@\n+b\n";
+
+        let parsed = parsed_diff(diff);
+
+        assert_eq!(parsed.get("x"), Some(&Vec::new()));
+    }
+
+    #[test]
+    fn a_deleted_file_with_an_undecodable_old_path_is_rejected() {
+        let diff = "--- \"a/x\n+++ /dev/null\n@@ -1 +0,0 @@\n-a\n";
+
+        let error = parse_unified_diff(diff, DiffLimits::default()).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "invalid review scope: changed file path has an unterminated quote"
+        );
+    }
+
+    #[test]
     fn the_parser_accepts_a_diff_that_exactly_meets_every_limit() {
         let limits = small_limits();
         let mut diff = changed_file_block("a.rs", limits.max_ranges_per_file);
@@ -2000,7 +2021,12 @@ deleted file mode 100644\n\
     fn rejects_origins_without_a_resolvable_host() {
         let hosts = github_hosts();
 
-        for remote in ["/srv/git/project.git", "github.com:owner/project.git", ""] {
+        for remote in [
+            "/srv/git/project.git",
+            "github.com:owner/project.git",
+            "/srv/git:project.git",
+            "",
+        ] {
             let error = repository_slug_from_remote(remote, &hosts)
                 .expect_err("an origin without a host must be rejected");
             assert!(
@@ -2116,6 +2142,13 @@ deleted file mode 100644\n\
 
         assert_eq!(captured.bytes, b"abcd");
         assert!(!captured.truncated);
+    }
+
+    #[test]
+    fn a_process_pipe_read_failure_is_propagated() {
+        let error = read_process_pipe(EndlessPipe { remaining_reads: 0 }, 16).unwrap_err();
+
+        assert_eq!(error.to_string(), "the reader kept draining past the limit");
     }
 
     #[cfg(unix)]
@@ -2797,6 +2830,134 @@ deleted file mode 100644\n\
         );
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_failed_pull_request_lookup_aborts_session_preparation() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/project/pulls/7"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
+            .mount(&server)
+            .await;
+        let api_base = server.uri();
+
+        let outcome = tokio::task::spawn_blocking(move || {
+            prepare_review_session(
+                &test_github_client(&api_base),
+                Path::new("."),
+                7,
+                Some("owner/project"),
+            )
+        })
+        .await
+        .unwrap();
+
+        let error = match outcome {
+            Ok(_) => panic!("a failed pull request lookup must not produce a review session"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("HTTP 500"), "{error}");
+        assert_eq!(
+            server.received_requests().await.unwrap().len(),
+            1,
+            "a failed metadata lookup must not fetch the diff or the archive"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_diff_beyond_the_changed_file_limit_aborts_before_the_archive_download() {
+        let server = MockServer::start().await;
+        let mut diff = String::new();
+        for index in 0..=MAX_CHANGED_FILES {
+            diff.push_str(&changed_file_block(&format!("f{index}.rs"), 1));
+        }
+        mount_pull_request(&server, "main", &diff, None).await;
+        let api_base = server.uri();
+
+        let outcome = tokio::task::spawn_blocking(move || {
+            prepare_review_session(
+                &test_github_client(&api_base),
+                Path::new("."),
+                7,
+                Some("owner/project"),
+            )
+        })
+        .await
+        .unwrap();
+
+        let error = match outcome {
+            Ok(_) => panic!("an over-limit diff must not produce a review session"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error.to_string(),
+            "review diff exceeds the changed files limit of 10000"
+        );
+        assert_eq!(
+            server.received_requests().await.unwrap().len(),
+            2,
+            "an over-limit diff must not download the head archive"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_failed_archive_download_aborts_session_preparation() {
+        let server = MockServer::start().await;
+        mount_pull_request(&server, "main", PR_DIFF, None).await;
+        let api_base = server.uri();
+
+        let outcome = tokio::task::spawn_blocking(move || {
+            prepare_review_session(
+                &test_github_client(&api_base),
+                Path::new("."),
+                7,
+                Some("owner/project"),
+            )
+        })
+        .await
+        .unwrap();
+
+        let error = match outcome {
+            Ok(_) => panic!("a missing archive must not produce a review session"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("HTTP 404"), "{error}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_archive_that_is_not_a_zip_aborts_session_preparation() {
+        let server = MockServer::start().await;
+        mount_pull_request(
+            &server,
+            "main",
+            PR_DIFF,
+            Some(b"definitely not a zip archive".to_vec()),
+        )
+        .await;
+        let api_base = server.uri();
+
+        let outcome = tokio::task::spawn_blocking(move || {
+            prepare_review_session(
+                &test_github_client(&api_base),
+                Path::new("."),
+                7,
+                Some("owner/project"),
+            )
+        })
+        .await
+        .unwrap();
+
+        let error = match outcome {
+            Ok(_) => panic!("a corrupt archive must not produce a review session"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("no end of central directory record"),
+            "{error}"
+        );
+    }
+
     #[test]
     fn snapshot_extraction_reports_unusable_directories() {
         let directory = tempfile::tempdir().unwrap();
@@ -2941,6 +3102,34 @@ deleted file mode 100644\n\
         assert!(
             started.elapsed() < Duration::from_secs(10),
             "a failed wait must still terminate the child"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_termination_masks_the_wait_failure_that_triggered_it() {
+        let directory = tempfile::tempdir().unwrap();
+
+        let error = run_git_metadata_command(
+            Path::new("/bin/sh"),
+            directory.path(),
+            &["-c", "sleep 30"],
+            Duration::from_secs(30),
+            ProcessControl {
+                wait: |_, _| Err(std::io::Error::other("waitpid failed")),
+                terminate: |child, group| {
+                    crate::process::terminate_std(child, group)?;
+                    Err(std::io::Error::other("kill refused"))
+                },
+                ..ProcessControl::default()
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "terminate git metadata command: kill refused",
+            "the termination failure surfaces instead of the wait failure it answered"
         );
     }
 

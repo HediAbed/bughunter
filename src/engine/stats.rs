@@ -511,6 +511,36 @@ mod tests {
     }
 
     #[test]
+    fn entry_stats_match_the_plain_count_and_honour_cancellation() {
+        let dir = TempDir::new().unwrap();
+        let file = dir.path().join("app.rs");
+        fs::write(&file, "// note\nfn main() {}\n").unwrap();
+        let filesystem = open_filesystem(dir.path());
+        let config = default_config();
+        let files = vec![entry(&file, "rust")];
+
+        let plain = project_stats_for_entries(&filesystem, &config, &files);
+        let live = project_stats_for_entries_cancellable(
+            &filesystem,
+            &config,
+            &files,
+            &CancelToken::default(),
+        )
+        .unwrap();
+
+        assert_eq!(live.total_code_lines, plain.total_code_lines);
+        assert_eq!(live.total_comment_lines, plain.total_comment_lines);
+        assert_eq!(live.total_lines, plain.total_lines);
+
+        let cancelled = CancelToken::default();
+        cancelled.cancel();
+        let error = project_stats_for_entries_cancellable(&filesystem, &config, &files, &cancelled)
+            .unwrap_err();
+
+        assert!(matches!(error, EngineError::Cancelled));
+    }
+
+    #[test]
     fn counts_code_comment_and_blank_lines() {
         let dir = TempDir::new().unwrap();
         fs::write(

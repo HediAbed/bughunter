@@ -298,16 +298,10 @@ fn locate_classic_footer(trailer: &TrailingMetadata) -> Result<ClassicFooter, Re
         return Err(missing_classic_footer());
     };
     let mut located: Option<ClassicFooter> = None;
-    for window_offset in (0..=last_offset).rev() {
-        if !window
-            .get(window_offset..)
-            .is_some_and(|tail| tail.starts_with(&CLASSIC_FOOTER_SIGNATURE))
-        {
-            continue;
-        }
-        let Some(footer) = parse_classic_footer(window, window_offset) else {
-            continue;
-        };
+    for footer in (0..=last_offset)
+        .rev()
+        .filter_map(|window_offset| parse_classic_footer(window, window_offset))
+    {
         if !footer.terminates_at(window.len()) {
             continue;
         }
@@ -324,8 +318,7 @@ fn parse_classic_footer(window: &[u8], window_offset: usize) -> Option<ClassicFo
     if !bytes.starts_with(&CLASSIC_FOOTER_SIGNATURE) {
         return None;
     }
-    let mut fields = FieldReader::new(bytes);
-    fields.skip(SIGNATURE_BYTES)?;
+    let mut fields = FieldReader::new(&bytes[SIGNATURE_BYTES..]);
     Some(ClassicFooter {
         window_offset,
         disk_number: fields.u16()?,
@@ -402,8 +395,7 @@ fn parse_zip64_locator(window: &[u8], window_offset: usize) -> Option<Zip64Locat
     if !bytes.starts_with(&ZIP64_LOCATOR_SIGNATURE) {
         return None;
     }
-    let mut fields = FieldReader::new(bytes);
-    fields.skip(SIGNATURE_BYTES)?;
+    let mut fields = FieldReader::new(&bytes[SIGNATURE_BYTES..]);
     Some(Zip64Locator {
         disk_with_central_directory: fields.u32()?,
         footer_offset: fields.u64()?,
@@ -415,8 +407,7 @@ fn parse_zip64_footer(window: &[u8], offset: u64) -> Option<Zip64Footer> {
     if !window.starts_with(&ZIP64_FOOTER_SIGNATURE) {
         return None;
     }
-    let mut fields = FieldReader::new(window);
-    fields.skip(SIGNATURE_BYTES)?;
+    let mut fields = FieldReader::new(&window[SIGNATURE_BYTES..]);
     let record_bytes = fields.u64()?;
     fields.skip(ZIP64_FOOTER_VERSION_BYTES)?;
     Some(Zip64Footer {
@@ -1076,6 +1067,7 @@ mod tests {
         method: u16,
         external_attributes: u32,
         declared_size: Option<u32>,
+        local_header_offset: Option<u32>,
     }
 
     impl<'a> RawEntry<'a> {
@@ -1086,6 +1078,7 @@ mod tests {
                 method: 0,
                 external_attributes: 0o100644 << 16,
                 declared_size: None,
+                local_header_offset: None,
             }
         }
 
@@ -1101,6 +1094,11 @@ mod tests {
 
         fn with_declared_size(mut self, declared_size: u32) -> Self {
             self.declared_size = Some(declared_size);
+            self
+        }
+
+        fn with_local_header_offset(mut self, local_header_offset: u32) -> Self {
+            self.local_header_offset = Some(local_header_offset);
             self
         }
     }
@@ -1222,7 +1220,7 @@ mod tests {
             let compressed_size = entry.data.len() as u32;
             let uncompressed_size = entry.declared_size.unwrap_or(compressed_size);
             let name_length = entry.name.len() as u16;
-            let header_offset = bytes.len() as u32;
+            let header_offset = entry.local_header_offset.unwrap_or(bytes.len() as u32);
 
             bytes.extend_from_slice(&0x0403_4b50u32.to_le_bytes());
             bytes.extend_from_slice(&20u16.to_le_bytes());
@@ -2381,5 +2379,243 @@ mod tests {
             error.to_string(),
             archive_rejection("archive contains more than 1 entries")
         );
+    }
+
+    #[test]
+    fn a_footer_signature_without_room_for_its_fields_is_not_a_footer() {
+        let body = raw_archive_body(&[RawEntry::stored("root/one", b"1")]);
+        let mut trailer = vec![0u8; 6];
+        trailer.extend_from_slice(&CLASSIC_FOOTER_SIGNATURE);
+        let archive = sealed_archive(&body, &trailer);
+
+        assert_eq!(
+            rejection(archive.path(), ArchiveLimits::default()),
+            archive_rejection(&format!(
+                "archive has no end of central directory record in its last {MAX_TRAILING_METADATA_BYTES} bytes"
+            ))
+        );
+    }
+
+    #[test]
+    fn a_classic_footer_requires_every_field() {
+        let footer = ClassicFooterFixture::new(&raw_archive_body(&[])).bytes();
+
+        assert!(parse_classic_footer(&footer, footer.len() + 1).is_none());
+        assert!(parse_classic_footer(b"PK\x01\x02 not a footer", 0).is_none());
+        for truncated in 0..footer.len() {
+            assert!(
+                parse_classic_footer(&footer[..truncated], 0).is_none(),
+                "{truncated} bytes of a footer must not parse"
+            );
+        }
+
+        let parsed = parse_classic_footer(&footer, 0).unwrap();
+        assert_eq!(parsed.disk_number, 0);
+        assert_eq!(parsed.comment_bytes, 0);
+    }
+
+    #[test]
+    fn a_zip64_locator_requires_every_field() {
+        let locator = zip64_locator_bytes(8);
+
+        assert!(parse_zip64_locator(&locator, locator.len() + 1).is_none());
+        for truncated in 0..locator.len() {
+            assert!(
+                parse_zip64_locator(&locator[..truncated], 0).is_none(),
+                "{truncated} bytes of a ZIP64 locator must not parse"
+            );
+        }
+
+        let parsed = parse_zip64_locator(&locator, 0).unwrap();
+        assert_eq!(parsed.footer_offset, 8);
+        assert_eq!(parsed.total_disks, SINGLE_DISK);
+    }
+
+    #[test]
+    fn a_zip64_footer_requires_every_field() {
+        let mut footer = Vec::new();
+        footer.extend_from_slice(&ZIP64_FOOTER_SIGNATURE);
+        footer.extend_from_slice(&ZIP64_MINIMUM_RECORD_BYTES.to_le_bytes());
+        footer.extend_from_slice(&ZIP64_VERSION.to_le_bytes());
+        footer.extend_from_slice(&ZIP64_VERSION.to_le_bytes());
+        footer.extend_from_slice(&FIRST_DISK.to_le_bytes());
+        footer.extend_from_slice(&FIRST_DISK.to_le_bytes());
+        footer.extend_from_slice(&1u64.to_le_bytes());
+        footer.extend_from_slice(&1u64.to_le_bytes());
+        footer.extend_from_slice(&MIN_CENTRAL_RECORD_BYTES.to_le_bytes());
+        footer.extend_from_slice(&0u64.to_le_bytes());
+        assert_eq!(footer.len() as u64, ZIP64_FOOTER_BYTES);
+
+        for truncated in 0..footer.len() {
+            assert!(
+                parse_zip64_footer(&footer[..truncated], 0).is_none(),
+                "{truncated} bytes of a ZIP64 footer must not parse"
+            );
+        }
+
+        let parsed = parse_zip64_footer(&footer, 12).unwrap();
+        assert_eq!(parsed.offset, 12);
+        assert_eq!(parsed.total_entries, 1);
+    }
+
+    #[test]
+    fn field_reads_past_the_end_of_a_buffer_yield_nothing() {
+        let mut fields = FieldReader::new(&[0u8; 7]);
+        assert!(fields.u64().is_none());
+        let mut fields = FieldReader::new(&[0u8; 3]);
+        assert!(fields.u32().is_none());
+        let mut fields = FieldReader::new(&[0u8; 1]);
+        assert!(fields.u16().is_none());
+
+        let mut fields = FieldReader::new(&[0u8; 2]);
+        assert!(fields.skip(3).is_none());
+        assert_eq!(fields.skip(2), Some(()));
+        assert!(fields.u16().is_none());
+
+        let mut fields = FieldReader::new(&[9u8, 7]);
+        assert_eq!(fields.u16(), Some(0x0709));
+    }
+
+    #[test]
+    fn preflight_propagates_a_trailing_metadata_read_failure() {
+        let archive = archive_file(&[]);
+        let mut file = archive.reopen().unwrap();
+
+        let error = preflight_declared_entries(&mut file, 1, ArchiveLimits::default()).unwrap_err();
+
+        assert!(matches!(
+            error,
+            ReviewError::Io { action, .. } if action == "read archive trailing metadata"
+        ));
+    }
+
+    #[test]
+    fn an_archive_without_entries_has_no_root() {
+        let archive = raw_archive(&[]);
+
+        assert_eq!(
+            rejection(archive.path(), ArchiveLimits::default()),
+            archive_rejection("archive contains no entries")
+        );
+    }
+
+    #[test]
+    fn the_root_name_consumes_the_path_retention_budget() {
+        let archive = archive_with(&[("root/file", b"x", None)]);
+        let limits = ArchiveLimits {
+            max_retained_path_bytes: 2,
+            ..ArchiveLimits::default()
+        };
+
+        assert_eq!(
+            rejection(archive.path(), limits),
+            archive_rejection("archive paths exceed the 2 byte path retention limit")
+        );
+    }
+
+    #[test]
+    fn an_entry_without_a_name_cannot_be_rooted() {
+        let archive = raw_archive(&[RawEntry::stored("", b"x")]);
+
+        let message = rejection(archive.path(), ArchiveLimits::default());
+
+        assert!(
+            message.starts_with("pull request archive failed validation: unsafe archive path"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn a_central_directory_the_parser_rejects_after_preflight_is_reported() {
+        let body = raw_archive_body(&[RawEntry::stored("root/one", b"1")]);
+        let footer = ClassicFooterFixture::new(&body).bytes();
+        let mut bytes = body.bytes.clone();
+        bytes[usize::try_from(body.central_offset).unwrap()] ^= 0xFF;
+        let corrupted = RawArchive { bytes, ..body };
+        let archive = sealed_archive(&corrupted, &footer);
+
+        let message = rejection(archive.path(), ArchiveLimits::default());
+
+        assert!(
+            message.starts_with("pull request archive failed validation: "),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn an_entry_whose_local_header_cannot_be_read_is_reported() {
+        let archive = raw_archive(&[
+            RawEntry::stored("root/one", b"1").with_local_header_offset(u32::MAX - 3)
+        ]);
+
+        let message = rejection(archive.path(), ArchiveLimits::default());
+
+        assert!(
+            message.starts_with("pull request archive failed validation: "),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn extraction_reports_an_entry_that_vanishes_before_it_is_written() {
+        let archive = raw_archive(&[RawEntry::stored("root/one", b"1")]);
+        let mut parsed =
+            zip::ZipArchive::new(std::fs::File::open(archive.path()).unwrap()).unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let ghost = ArchiveEntry {
+            index: 7,
+            output_path: PathBuf::from("one"),
+            is_directory: false,
+            size: 0,
+        };
+
+        let error = extract_entries(&mut parsed, destination.path(), &[ghost]).unwrap_err();
+
+        assert!(
+            matches!(error, ReviewError::Archive(_)),
+            "a stale index is an archive error, not a filesystem error: {error}"
+        );
+        assert!(!destination.path().join("one").exists());
+    }
+
+    #[test]
+    fn extraction_rejects_an_entry_whose_size_cannot_be_bounded() {
+        let archive = raw_archive(&[RawEntry::stored("root/one", b"1")]);
+        let mut parsed =
+            zip::ZipArchive::new(std::fs::File::open(archive.path()).unwrap()).unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let unboundable = ArchiveEntry {
+            index: 0,
+            output_path: PathBuf::from("one"),
+            is_directory: false,
+            size: u64::MAX,
+        };
+
+        let error = extract_entries(&mut parsed, destination.path(), &[unboundable]).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "pull request archive failed validation: archive entry size cannot be bounded"
+        );
+    }
+
+    #[test]
+    fn an_archive_comment_is_accepted_when_the_footer_accounts_for_it() {
+        let body = raw_archive_body(&[RawEntry::stored("root/one", b"1")]);
+
+        for comment_bytes in [3, MAX_ARCHIVE_COMMENT_BYTES] {
+            let comment = vec![b'c'; comment_bytes];
+            let footer = ClassicFooterFixture::new(&body)
+                .with_comment_bytes(u16::try_from(comment.len()).unwrap())
+                .bytes();
+            let archive = sealed_archive(&body, &[footer.as_slice(), comment.as_slice()].concat());
+            let destination = tempfile::tempdir().unwrap();
+
+            let root =
+                extract_zip_archive(archive.path(), destination.path(), ArchiveLimits::default())
+                    .unwrap();
+
+            assert_eq!(std::fs::read(root.join("one")).unwrap(), b"1");
+        }
     }
 }

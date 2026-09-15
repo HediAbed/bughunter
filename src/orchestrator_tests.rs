@@ -569,6 +569,45 @@ fn every_markdown_prefix_obeys_the_same_hard_byte_ceiling() {
     );
 }
 
+struct CancelOnLogMessage {
+    needle: &'static str,
+    cancel: crate::cancel::CancelToken,
+}
+
+impl<S> tracing_subscriber::Layer<S> for CancelOnLogMessage
+where
+    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+{
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        let mut message = LoggedMessage::default();
+        event.record(&mut message);
+        if message.0.contains(self.needle) {
+            self.cancel.cancel();
+        }
+    }
+}
+
+#[derive(Default)]
+struct LoggedMessage(String);
+
+impl tracing::field::Visit for LoggedMessage {
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        if field.name() == "message" {
+            self.0.push_str(value);
+        }
+    }
+
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "message" {
+            self.0 = format!("{value:?}");
+        }
+    }
+}
+
 #[test]
 fn repository_map_omissions_emit_the_presented_and_omitted_counts() {
     let state = crate::tui::shared_state();
@@ -912,6 +951,36 @@ async fn already_cancelled_run_aborts_before_reaching_the_model() {
 }
 
 #[tokio::test]
+async fn a_run_on_a_missing_project_root_fails_and_marks_the_run_failed() {
+    let dir = TempDir::new().unwrap();
+    let missing = dir.path().join("missing-project");
+    let state = crate::tui::shared_state();
+
+    let result = run_analysis(
+        &missing,
+        None,
+        &minimal_config(AnalysisMode::AiOnly),
+        state.clone(),
+        false,
+        None,
+        crate::cancel::CancelToken::default(),
+    )
+    .await;
+
+    let Err(error) = result else {
+        panic!("a missing project root must fail the run");
+    };
+    assert!(
+        matches!(
+            error,
+            BugHunterError::Engine(crate::errors::EngineError::Io { .. })
+        ),
+        "{error}"
+    );
+    assert_eq!(state.lock().phase, crate::tui::Phase::Failed);
+}
+
+#[tokio::test]
 async fn panicked_blocking_analysis_worker_returns_a_typed_error() {
     let panic_on_run = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let worker = {
@@ -971,6 +1040,48 @@ async fn cancellation_interrupts_a_cooperative_blocking_worker() {
 }
 
 #[test]
+fn static_checks_on_a_cancelled_run_abort_with_a_cancellation_error() {
+    let project = TempDir::new().unwrap();
+    fs::write(project.path().join("source.rs"), "// TODO: static issue\n").unwrap();
+    let config = minimal_config(AnalysisMode::Static);
+    let context = prepare_context(project.path(), &config).unwrap();
+    let cancel = crate::cancel::CancelToken::default();
+    cancel.cancel();
+
+    let error = run_static_checks_cancellable(
+        &context.engine,
+        &context.inventory,
+        &config,
+        &context.counter,
+        &cancel,
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        BugHunterError::Engine(crate::errors::EngineError::Cancelled)
+    ));
+}
+
+#[test]
+fn initial_findings_on_a_cancelled_run_abort_before_scanning() {
+    let project = TempDir::new().unwrap();
+    fs::write(project.path().join("source.rs"), "// TODO: static issue\n").unwrap();
+    let config = minimal_config(AnalysisMode::Full);
+    let context = prepare_context(project.path(), &config).unwrap();
+    let cancel = crate::cancel::CancelToken::default();
+    cancel.cancel();
+
+    let error =
+        initial_findings_cancellable(&context, &config, AnalysisMode::Full, &cancel).unwrap_err();
+
+    assert!(matches!(
+        error,
+        BugHunterError::Engine(crate::errors::EngineError::Cancelled)
+    ));
+}
+
+#[test]
 fn repository_map_rejects_an_empty_selected_file_set() {
     let project = TempDir::new().unwrap();
     fs::write(project.path().join("source.rs"), "fn source() {}\n").unwrap();
@@ -989,6 +1100,32 @@ fn repository_map_rejects_an_empty_selected_file_set() {
     assert!(matches!(
         error,
         BugHunterError::RepoMap(crate::errors::RepoMapError::EmptyProject(_))
+    ));
+}
+
+#[test]
+fn a_repo_map_build_aborts_as_soon_as_cancellation_is_observed() {
+    let project = TempDir::new().unwrap();
+    fs::write(project.path().join("kept.rs"), "fn kept() {}\n").unwrap();
+    let vanished = project.path().join("vanished.rs");
+    fs::write(&vanished, "fn vanished() {}\n").unwrap();
+    let inventory = ProjectInventory::build(project.path(), &EngineConfig::default()).unwrap();
+    fs::remove_file(&vanished).unwrap();
+    let cancel = crate::cancel::CancelToken::default();
+    let subscriber = tracing_subscriber::registry().with(CancelOnLogMessage {
+        needle: "failed to read file for repo map",
+        cancel: cancel.clone(),
+    });
+
+    let result = tracing::subscriber::with_default(subscriber, || {
+        build_repo_map(&inventory, &EngineConfig::default(), 10_000, None, &cancel)
+    });
+
+    assert!(matches!(
+        result,
+        Err(BugHunterError::Engine(
+            crate::errors::EngineError::Cancelled
+        ))
     ));
 }
 
@@ -1351,6 +1488,13 @@ fn terminal_cleanup_errors_never_replace_an_analysis_error() {
             ..
         })
     ));
+}
+
+#[test]
+fn a_successful_run_with_a_clean_terminal_shutdown_keeps_its_result() {
+    let result = preserve_analysis_result(Ok(42), Ok(()));
+
+    assert_eq!(result.ok(), Some(42));
 }
 
 #[test]
@@ -1825,4 +1969,42 @@ async fn failed_ai_runs_never_render_as_finished() {
     let mut state = state.lock();
     assert_eq!(state.phase, crate::tui::Phase::Failed);
     assert!(state.progress() < 1.0);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_run_cancelled_as_the_analysis_completes_reports_cancellation() {
+    let project = TempDir::new().unwrap();
+    fs::write(project.path().join("app.rs"), "fn app() {}\n").unwrap();
+    let cli = TempDir::new().unwrap();
+    let mut raw = Config::default();
+    raw.llm.backend = BackendConfig::ClaudeCli {
+        binary: recording_claude_binary(cli.path(), "app.rs"),
+    };
+    raw.llm.model = "claude-test".into();
+    let config = ValidatedConfig::new(raw, AnalysisMode::AiOnly).unwrap();
+    let state = crate::tui::shared_state();
+    let cancel = crate::cancel::CancelToken::default();
+    let subscriber = tracing_subscriber::registry().with(CancelOnLogMessage {
+        needle: "AI analysis complete",
+        cancel: cancel.clone(),
+    });
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    let result = run_analysis(
+        project.path(),
+        Some(project.path()),
+        &config,
+        state.clone(),
+        false,
+        None,
+        cancel,
+    )
+    .await;
+
+    let Err(error) = result else {
+        panic!("a run cancelled after the analysis must not produce a report");
+    };
+    assert!(matches!(error, BugHunterError::Cancelled), "{error}");
+    assert_eq!(state.lock().phase, crate::tui::Phase::Cancelled);
 }

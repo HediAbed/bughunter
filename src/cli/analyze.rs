@@ -43,9 +43,7 @@ pub(super) fn run(args: &AnalyzeArgs) -> Result<i32, BugHunterError> {
     );
 
     if args.pr.is_none() && !mode.requires_ai() {
-        let prepared = finish_preparation(args, config, local_checkout).inspect_err(|_| {
-            replay_buffered_logs(use_tui, &state);
-        })?;
+        let prepared = finish_preparation(args, config, local_checkout)?;
         let result = run_with_log_replay(&prepared, &state, use_tui);
         return report_result(args, &prepared, &state, use_tui, result);
     }
@@ -230,15 +228,23 @@ fn finish_preparation_cancellable(
         let blocking = tokio::task::spawn_blocking(move || {
             prepare_pull_request_review(repository, config, &local_checkout, pull_request)
         });
-        tokio::select! {
-            biased;
-            () = cancel.cancelled() => Err(BugHunterError::Cancelled),
-            outcome = blocking => match outcome {
-                Ok(result) => result,
-                Err(error) => Err(worker_failed("prepare pull request review", error)),
-            },
-        }
+        race_worker(cancel, "prepare pull request review", blocking).await
     })
+}
+
+async fn race_worker<T>(
+    cancel: crate::cancel::CancelToken,
+    action: &'static str,
+    blocking: tokio::task::JoinHandle<Result<T, BugHunterError>>,
+) -> Result<T, BugHunterError> {
+    tokio::select! {
+        biased;
+        () = cancel.cancelled() => Err(BugHunterError::Cancelled),
+        outcome = blocking => match outcome {
+            Ok(result) => result,
+            Err(error) => Err(worker_failed(action, error)),
+        },
+    }
 }
 
 fn worker_failed(action: &'static str, error: tokio::task::JoinError) -> BugHunterError {
@@ -351,14 +357,7 @@ fn execute_cancellable(
             let blocking = tokio::task::spawn_blocking(move || {
                 orchestrator::run_static_analysis(&project_root, &config)
             });
-            tokio::select! {
-                biased;
-                () = cancel.cancelled() => Err(BugHunterError::Cancelled),
-                outcome = blocking => match outcome {
-                    Ok(result) => result,
-                    Err(error) => Err(worker_failed("run static analysis", error)),
-                },
-            }
+            race_worker(cancel, "run static analysis", blocking).await
         });
     }
 
@@ -968,5 +967,155 @@ mod tests {
         let output = orchestrator::render_markdown_summary_within(findings, scan, limit_bytes)
             .map_err(BugHunterError::Report)?;
         write_output(&output, Some(destination))
+    }
+
+    #[test]
+    fn preparing_an_existing_project_produces_a_local_analysis() {
+        let project = tempfile::tempdir().unwrap();
+
+        let prepared = prepare(&analyze_args(project.path()), AnalysisMode::Static).unwrap();
+
+        assert_eq!(prepared.config.mode(), AnalysisMode::Static);
+        assert!(prepared.review_session.is_none());
+        assert_eq!(
+            prepared.project_root.as_path(),
+            ProjectRoot::open(project.path()).unwrap().as_path()
+        );
+    }
+
+    #[test]
+    fn a_pull_request_preparation_without_a_git_remote_fails_locally() {
+        let project = tempfile::tempdir().unwrap();
+        let mut args = analyze_args(project.path());
+        args.pr = Some(7);
+        let config =
+            config::ValidatedConfig::new(config::schema::Config::default(), AnalysisMode::Static)
+                .unwrap();
+        let local_checkout = ProjectRoot::open(project.path()).unwrap();
+
+        match finish_preparation(&args, config, local_checkout) {
+            Err(BugHunterError::Review(_)) => {}
+            Err(other) => panic!("unexpected preparation error: {other}"),
+            Ok(_) => panic!("a pull request review must not prepare without a git remote"),
+        }
+    }
+
+    #[test]
+    fn a_failed_report_write_flushes_buffered_logs_and_propagates_the_error() {
+        let project = tempfile::tempdir().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let destination = directory.path().join("absent").join("report.json");
+        let mut schema = config::schema::Config::default();
+        schema.general.output_path = Some(destination.clone());
+        let prepared = PreparedAnalysis {
+            project_root: ProjectRoot::open(project.path()).unwrap(),
+            backend_working_directory: ProjectRoot::open(project.path()).unwrap(),
+            config: config::ValidatedConfig::new(schema, AnalysisMode::Static).unwrap(),
+            review_session: None,
+        };
+        let state = shared_state();
+        state
+            .lock()
+            .push_log(tracing::Level::WARN, "buffered before the failure".into());
+        let result = orchestrator::AnalysisResult {
+            findings: Vec::new(),
+            output: "{}".to_string(),
+            has_findings_above_threshold: false,
+            scan: crate::report::ScanStatus::complete(0),
+        };
+
+        let error = report_result(
+            &analyze_args(project.path()),
+            &prepared,
+            &state,
+            true,
+            Ok(result),
+        )
+        .unwrap_err();
+
+        match error {
+            BugHunterError::Report(ReportError::WriteError { path, .. }) => {
+                assert_eq!(path, destination);
+            }
+            other => panic!("unexpected report error: {other}"),
+        }
+        assert_eq!(
+            state.lock().logs.len(),
+            1,
+            "replaying buffered logs must not consume them"
+        );
+    }
+
+    #[test]
+    fn a_panicking_worker_is_mapped_to_a_worker_failure() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+
+        let error = runtime
+            .block_on(async {
+                let blocking = tokio::task::spawn_blocking(|| -> Result<(), BugHunterError> {
+                    panic!("the static checks blew up");
+                });
+                race_worker(
+                    crate::cancel::CancelToken::default(),
+                    "run static analysis",
+                    blocking,
+                )
+                .await
+            })
+            .unwrap_err();
+
+        match error {
+            BugHunterError::Analysis(AnalysisError::WorkerFailed { action, reason }) => {
+                assert_eq!(action, "run static analysis");
+                assert!(reason.contains("panicked"), "{reason}");
+            }
+            other => panic!("unexpected worker error: {other}"),
+        }
+    }
+
+    #[cfg(unix)]
+    const SIGNAL_DELIVERY_ATTEMPTS: usize = 25;
+
+    #[cfg(unix)]
+    const SIGNAL_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(40);
+
+    #[cfg(unix)]
+    async fn raise_signal_until_cancelled(
+        signal: libc::c_int,
+        cancel: &crate::cancel::CancelToken,
+    ) {
+        for _ in 0..SIGNAL_DELIVERY_ATTEMPTS {
+            if cancel.is_cancelled() {
+                return;
+            }
+            let delivered = unsafe { libc::kill(libc::getpid(), signal) };
+            assert_eq!(delivered, 0, "signal {signal} could not be delivered");
+            tokio::time::sleep(SIGNAL_CHECK_INTERVAL).await;
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn interrupt_and_terminate_signals_cancel_the_token() {
+        let mut interrupt_guard =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).unwrap();
+        let mut terminate_guard =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
+
+        let interrupted = crate::cancel::CancelToken::default();
+        spawn_cancel_on_signals(interrupted.clone());
+        raise_signal_until_cancelled(libc::SIGINT, &interrupted).await;
+        assert!(interrupted.is_cancelled(), "SIGINT must cancel the token");
+
+        let terminated = crate::cancel::CancelToken::default();
+        spawn_cancel_on_unix_signal(
+            terminated.clone(),
+            tokio::signal::unix::SignalKind::terminate(),
+        );
+        raise_signal_until_cancelled(libc::SIGTERM, &terminated).await;
+        assert!(terminated.is_cancelled(), "SIGTERM must cancel the token");
+
+        assert!(interrupt_guard.recv().await.is_some());
+        assert!(terminate_guard.recv().await.is_some());
     }
 }

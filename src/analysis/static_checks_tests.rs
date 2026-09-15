@@ -57,6 +57,47 @@ fn ignores_short_functions() {
 }
 
 #[test]
+fn inventory_scans_report_findings_and_honour_cancellation() {
+    let dir = TempDir::new().unwrap();
+    let lines: Vec<String> = (0..60).map(|i| format!("    let x{i} = {i};")).collect();
+    let content = format!("fn long_function() {{\n{}\n}}\n", lines.join("\n"));
+    fs::write(dir.path().join("long.rs"), &content).unwrap();
+
+    let engine = create_engine();
+    let config = default_analysis_config();
+    let inventory = ProjectInventory::build(dir.path(), &EngineConfig::default()).unwrap();
+
+    let live = run_static_checks_with_inventory_cancellable(
+        &engine,
+        &inventory,
+        &config,
+        &counter(),
+        &CancelToken::default(),
+    )
+    .unwrap();
+
+    assert_eq!(live.files_scanned, 1);
+    assert!(
+        live.findings
+            .iter()
+            .any(|f| f.rule.as_deref() == Some(FUNCTION_LENGTH_RULE))
+    );
+
+    let cancelled = CancelToken::default();
+    cancelled.cancel();
+    let error = run_static_checks_with_inventory_cancellable(
+        &engine,
+        &inventory,
+        &config,
+        &counter(),
+        &cancelled,
+    )
+    .unwrap_err();
+
+    assert!(matches!(error, EngineError::Cancelled));
+}
+
+#[test]
 fn detects_long_files() {
     let dir = TempDir::new().unwrap();
     let lines: Vec<String> = (0..600).map(|i| format!("let x{i} = {i};")).collect();

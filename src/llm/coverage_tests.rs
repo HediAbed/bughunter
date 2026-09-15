@@ -1040,6 +1040,39 @@ async fn a_lost_repository_worker_is_reported_as_an_agent_protocol_failure() {
     }
 }
 
+#[test]
+fn a_cancelled_repository_build_maps_to_a_cancellation() {
+    assert!(matches!(
+        repository_build_failure(crate::errors::EngineError::Cancelled),
+        LlmError::Cancelled
+    ));
+}
+
+#[test]
+fn a_failed_repository_build_carries_the_engine_error() {
+    let error = crate::errors::EngineError::DiscoveryLimitExceeded {
+        resource: "files",
+        limit: 10,
+    };
+    let engine_message = error.to_string();
+
+    match repository_build_failure(error) {
+        LlmError::AgentProtocol(message) => {
+            assert!(
+                message.starts_with("repository analysis failed: "),
+                "the failing stage must be named: {message}"
+            );
+            assert!(
+                message.ends_with(engine_message.as_str()),
+                "the engine error must be carried into the message: {message}"
+            );
+        }
+        other => {
+            panic!("a failed repository build must surface as an agent protocol error, not {other}")
+        }
+    }
+}
+
 #[tokio::test]
 async fn a_repository_map_worker_failure_skips_every_file_in_the_shard() {
     let project = two_file_project();
@@ -1102,6 +1135,58 @@ async fn a_repository_map_worker_failure_skips_every_file_in_the_shard() {
         outcome.last_error,
         Some(LlmError::AgentProtocol(_))
     ));
+}
+
+#[tokio::test]
+async fn a_cancelled_map_build_aborts_the_worker_and_skips_the_shard() {
+    let project = two_file_project();
+    let config = single_turn_config();
+    let inventory = Arc::new(ProjectInventory::build(project.path(), &config.engine).unwrap());
+    let backend = ResultBackend::new(Vec::new());
+    let engine: Arc<dyn crate::engine::Engine> =
+        Arc::new(DefaultEngine::new(EngineConfig::default()));
+    let cancel = CancelToken::default();
+    cancel.cancel();
+    let reporter = Reporter::new(crate::tui::shared_state());
+    let executor = ShardExecutor::new(
+        ShardedAnalysisRequest {
+            backend: &backend,
+            engine,
+            inventory: Arc::clone(&inventory),
+            config: &config,
+            counter: Arc::new(FindingCounter::new()),
+            system_prompt: "SYS",
+            reporter: &reporter,
+            review: None,
+            cancel: &cancel,
+        },
+        Arc::new(CoverageTracker::new()),
+        config.llm.effective_context_tokens(),
+        1,
+    );
+    let shard = shards_holding(&inventory, "first.rs", 1)
+        .into_iter()
+        .next()
+        .expect("the project must yield one shard");
+    let mut outcome = ShardOutcome::default();
+
+    executor.run_shard(0, shard, &mut outcome).await.unwrap();
+
+    assert_eq!(
+        backend.call_count(),
+        0,
+        "a cancelled map build must not reach the model"
+    );
+    assert_eq!(
+        outcome.skipped.entries(),
+        ["first.rs (repository map construction failed)".to_string()]
+    );
+    assert_eq!(outcome.failed_shards.len(), 1);
+    assert!(
+        matches!(outcome.last_error, Some(LlmError::Cancelled)),
+        "the aborted map build must be recorded as a cancellation: {:?}",
+        outcome.last_error
+    );
 }
 
 #[test]

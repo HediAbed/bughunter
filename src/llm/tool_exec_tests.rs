@@ -29,6 +29,15 @@ fn executor(
         .expect("the fixture project is readable")
 }
 
+fn inventory_executor(
+    dir: &TempDir,
+    engine: &Arc<dyn Engine>,
+    counter: &Arc<FindingCounter>,
+) -> ToolExecutor {
+    let inventory = ProjectInventory::build(dir.path(), &EngineConfig::default()).unwrap();
+    ToolExecutor::from_inventory(Arc::clone(engine), Arc::new(inventory), Arc::clone(counter))
+}
+
 fn changed_lines(spans: &[(&str, &[(u32, u32)])]) -> ChangedLines {
     let hunks: BTreeMap<String, Vec<(u32, u32)>> = spans
         .iter()
@@ -61,6 +70,144 @@ fn a_cancelled_tool_stops_before_engine_work() {
     };
 
     assert_eq!(error, "analysis cancelled");
+}
+
+#[test]
+fn a_live_cancel_token_lets_engine_discovery_run_to_completion() {
+    let (dir, engine, counter) = executor_env();
+    let exec = executor(&dir, &engine, &counter);
+
+    let outcome = exec
+        .execute_with_cancel(tools::DISCOVER_FILES, &json!({}), &CancelToken::default())
+        .expect("a live cancel token must not interrupt discovery");
+
+    assert!(outcome.text.contains("a.rs"));
+}
+
+#[test]
+fn a_live_cancel_token_lets_inventory_discovery_run_to_completion() {
+    let (dir, engine, counter) = scoped_env();
+    let exec = inventory_executor(&dir, &engine, &counter);
+
+    let outcome = exec
+        .execute_with_cancel(tools::DISCOVER_FILES, &json!({}), &CancelToken::default())
+        .expect("a live cancel token must not interrupt discovery");
+
+    assert!(outcome.text.contains("a.rs"));
+    assert!(outcome.text.contains("b.rs"));
+}
+
+#[test]
+fn a_live_cancel_token_lets_engine_search_run_to_completion() {
+    let (dir, engine, counter) = executor_env();
+    let exec = executor(&dir, &engine, &counter);
+
+    let outcome = exec
+        .execute_with_cancel(
+            tools::SEARCH_TEXT,
+            &json!({ "pattern": "fn main" }),
+            &CancelToken::default(),
+        )
+        .expect("a live cancel token must not interrupt search");
+
+    assert!(outcome.text.contains("a.rs"));
+}
+
+#[test]
+fn a_live_cancel_token_lets_inventory_search_run_to_completion() {
+    let (dir, engine, counter) = scoped_env();
+    let exec = inventory_executor(&dir, &engine, &counter);
+
+    let outcome = exec
+        .execute_with_cancel(
+            tools::SEARCH_TEXT,
+            &json!({ "pattern": "fn " }),
+            &CancelToken::default(),
+        )
+        .expect("a live cancel token must not interrupt search");
+
+    assert!(outcome.text.contains("a.rs"));
+    assert!(outcome.text.contains("b.rs"));
+}
+
+#[test]
+fn a_live_cancel_token_lets_engine_stats_run_to_completion() {
+    let (dir, engine, counter) = executor_env();
+    let exec = executor(&dir, &engine, &counter);
+
+    let outcome = exec
+        .execute_with_cancel(tools::PROJECT_STATS, &json!({}), &CancelToken::default())
+        .expect("a live cancel token must not interrupt stats collection");
+    let stats: Value = serde_json::from_str(&outcome.text).unwrap();
+
+    assert_eq!(stats["total_files"], 1);
+}
+
+#[test]
+fn a_live_cancel_token_lets_ast_search_run_to_completion() {
+    let (dir, engine, counter) = executor_env();
+    let exec = executor(&dir, &engine, &counter);
+
+    let outcome = exec
+        .execute_with_cancel(
+            tools::SEARCH_AST,
+            &json!({
+                "path": "a.rs",
+                "language": "rust",
+                "query": "(function_item) @function"
+            }),
+            &CancelToken::default(),
+        )
+        .expect("a live cancel token must not interrupt AST search");
+    let matches: Value = serde_json::from_str(&outcome.text).unwrap();
+
+    assert_eq!(
+        matches.as_array().unwrap()[0]["matched_code"].as_str(),
+        Some("fn main() {}")
+    );
+}
+
+#[test]
+fn search_ast_reports_the_functions_in_a_file() {
+    let (dir, engine, counter) = executor_env();
+    fs::write(
+        dir.path().join("a.rs"),
+        "fn main() {}\n\nfn helper() {\n    todo!();\n}\n",
+    )
+    .unwrap();
+    let exec = executor(&dir, &engine, &counter);
+
+    let outcome = exec
+        .execute(
+            tools::SEARCH_AST,
+            &json!({
+                "path": "a.rs",
+                "language": "rust",
+                "query": "(function_item) @function"
+            }),
+        )
+        .expect("a well-formed AST query must succeed");
+    let matches: Value = serde_json::from_str(&outcome.text).unwrap();
+    let matches = matches.as_array().unwrap();
+
+    assert_eq!(matches.len(), 2);
+    assert_eq!(matches[0]["matched_code"].as_str(), Some("fn main() {}"));
+    assert_eq!(matches[0]["line_start"].as_u64(), Some(1));
+    assert_eq!(matches[0]["language"].as_str(), Some("rust"));
+    assert_eq!(matches[1]["line_start"].as_u64(), Some(3));
+}
+
+#[test]
+fn an_inventory_executor_reads_files_through_the_snapshot() {
+    let (dir, engine, counter) = scoped_env();
+    let exec = inventory_executor(&dir, &engine, &counter);
+
+    let outcome = exec
+        .execute(tools::READ_FILE, &json!({ "path": "b.rs" }))
+        .expect("an inventory-backed executor must read project files");
+
+    assert!(outcome.text.contains("fn other()"));
+    assert_eq!(outcome.inspected_path.as_deref(), Some("b.rs"));
 }
 
 #[test]
@@ -957,13 +1104,8 @@ fn discover_files_applies_the_result_cap() {
 #[test]
 fn inventory_executor_reuses_the_same_snapshot_for_discovery_search_and_stats() {
     let (dir, engine, counter) = scoped_env();
-    let inventory = ProjectInventory::build(dir.path(), &EngineConfig::default()).unwrap();
+    let exec = inventory_executor(&dir, &engine, &counter);
     fs::write(dir.path().join("late.rs"), "fn late() {}\n").unwrap();
-    let exec = ToolExecutor::from_inventory(
-        Arc::clone(&engine),
-        Arc::new(inventory),
-        Arc::clone(&counter),
-    );
 
     let discovered = exec.execute(tools::DISCOVER_FILES, &json!({})).unwrap();
     let searched = exec
@@ -992,12 +1134,7 @@ fn discover_files_honors_extension_name_and_depth_filters_together() {
         "fn nested() {}\n",
     )
     .unwrap();
-    let inventory = ProjectInventory::build(dir.path(), &EngineConfig::default()).unwrap();
-    let exec = ToolExecutor::from_inventory(
-        Arc::clone(&engine),
-        Arc::new(inventory),
-        Arc::clone(&counter),
-    );
+    let exec = inventory_executor(&dir, &engine, &counter);
 
     let outcome = exec
         .execute(

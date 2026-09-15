@@ -437,12 +437,6 @@ fn parse_categories(value: &str) -> Result<Vec<AnalysisCategory>, ConfigError> {
             categories.push(category);
         }
     }
-    if categories.is_empty() {
-        return Err(invalid_env(
-            "BUGHUNTER_CATEGORIES",
-            "must contain at least one category".to_string(),
-        ));
-    }
     Ok(categories)
 }
 

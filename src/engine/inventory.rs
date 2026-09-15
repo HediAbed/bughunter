@@ -156,6 +156,23 @@ mod tests {
     }
 
     #[test]
+    fn a_cancelled_selection_refuses_to_hand_back_files() {
+        let directory = TempDir::new().unwrap();
+        std::fs::write(directory.path().join("one.rs"), "fn one() {}\n").unwrap();
+        let inventory =
+            ProjectInventory::build(directory.path(), &EngineConfig::default()).unwrap();
+        let cancel = CancelToken::default();
+        cancel.cancel();
+
+        let error = inventory
+            .select_files_cancellable(None, &cancel)
+            .expect_err("a cancelled selection must fail");
+
+        assert!(matches!(error, EngineError::Cancelled));
+        assert!(!inventory.files().is_empty());
+    }
+
+    #[test]
     fn selects_files_without_rewalking_the_project() {
         let directory = TempDir::new().unwrap();
         std::fs::write(directory.path().join("one.rs"), "fn one() {}\n").unwrap();

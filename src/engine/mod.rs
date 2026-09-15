@@ -52,13 +52,6 @@ pub trait Engine: Send + Sync {
         cancel: &CancelToken,
     ) -> Result<Vec<TextMatch>, EngineError>;
 
-    fn search_inventory_text(
-        &self,
-        inventory: &ProjectInventory,
-        pattern: &str,
-        opts: &SearchOpts,
-    ) -> Result<Vec<TextMatch>, EngineError>;
-
     fn search_inventory_entries(
         &self,
         inventory: &ProjectInventory,
@@ -156,21 +149,6 @@ impl Engine for DefaultEngine {
         cancel: &CancelToken,
     ) -> Result<Vec<TextMatch>, EngineError> {
         searcher::search_project_text_cancellable(filesystem, pattern, opts, &self.config, cancel)
-    }
-
-    fn search_inventory_text(
-        &self,
-        inventory: &ProjectInventory,
-        pattern: &str,
-        opts: &SearchOpts,
-    ) -> Result<Vec<TextMatch>, EngineError> {
-        searcher::search_project_entries(
-            inventory.filesystem(),
-            inventory.files(),
-            pattern,
-            opts,
-            &self.config,
-        )
     }
 
     fn search_inventory_entries(
