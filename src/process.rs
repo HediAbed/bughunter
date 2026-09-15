@@ -710,8 +710,8 @@ mod windows_tests {
         let (reader_sender, reader) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let mut output = output;
-            let mut marker = String::new();
-            let read = output.read_line(&mut marker);
+            let mut marker = Vec::new();
+            let read = output.read_until(b'\n', &mut marker);
             reader_sender
                 .send(read.map(|_| marker))
                 .expect("stage: marker sent");
@@ -726,7 +726,7 @@ mod windows_tests {
             .recv_timeout(stage_timeout)
             .expect("stage: marker read")
             .expect("stage: marker read ok");
-        assert_eq!(marker.trim(), "spawned");
+        assert_eq!(String::from_utf8_lossy(&marker).trim(), "spawned");
 
         let (wait_sender, wait_receiver) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
