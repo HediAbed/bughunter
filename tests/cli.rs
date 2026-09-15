@@ -19,7 +19,8 @@ fn isolated_command(home: &std::path::Path) -> std::process::Command {
         .env_remove("BUGHUNTER_MAX_SHARD_SECONDS")
         .env_remove("BUGHUNTER_CATEGORIES")
         .env_remove("BUGHUNTER_LOG_LEVEL")
-        .env_remove("RUST_LOG");
+        .env_remove("RUST_LOG")
+        .env_remove("XDG_CONFIG_HOME");
     command
 }
 
