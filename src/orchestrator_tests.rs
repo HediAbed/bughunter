@@ -1422,6 +1422,27 @@ fn cancellation_takes_precedence_over_a_completed_worker_error() {
 }
 
 #[test]
+fn an_active_token_lets_a_completed_result_through() {
+    let cancel = crate::cancel::CancelToken::default();
+    let worker_error = Err::<(), _>(
+        crate::errors::AnalysisError::WorkerFailed {
+            action: "prepare project",
+            reason: "worker failed".into(),
+        }
+        .into(),
+    );
+
+    assert!(cancellation_precedes(&cancel, Ok::<(), BugHunterError>(())).is_ok());
+
+    let error = cancellation_precedes(&cancel, worker_error).unwrap_err();
+
+    assert!(matches!(
+        error,
+        BugHunterError::Analysis(crate::errors::AnalysisError::WorkerFailed { .. })
+    ));
+}
+
+#[test]
 fn a_run_is_only_aborted_once_its_token_is_cancelled() {
     let cancel = crate::cancel::CancelToken::default();
 
@@ -1520,6 +1541,33 @@ fn terminal_cleanup_errors_never_replace_an_analysis_error() {
             action: "restore terminal state",
             ..
         })
+    ));
+}
+
+#[test]
+fn the_terminal_outcome_only_overrides_a_successful_analysis() {
+    let restore_failure = || std::io::Error::other("restore failed");
+
+    assert!(preserve_analysis_result::<()>(Ok(()), Ok(())).is_ok());
+
+    assert!(matches!(
+        preserve_analysis_result::<()>(Ok(()), Err(restore_failure())),
+        Err(BugHunterError::Analysis(
+            crate::errors::AnalysisError::TerminalFailed {
+                action: "restore terminal state",
+                ..
+            }
+        ))
+    ));
+
+    assert!(matches!(
+        preserve_analysis_result::<()>(Err(BugHunterError::Cancelled), Ok(())),
+        Err(BugHunterError::Cancelled)
+    ));
+
+    assert!(matches!(
+        preserve_analysis_result::<()>(Err(BugHunterError::Cancelled), Err(restore_failure())),
+        Err(BugHunterError::Cancelled)
     ));
 }
 
