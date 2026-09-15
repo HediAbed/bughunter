@@ -692,6 +692,8 @@ mod windows_tests {
 
     #[test]
     fn an_owned_job_outlives_a_reaped_leader_and_kills_descendants() {
+        use std::io::BufRead;
+
         let stage_timeout = GROUP_EXIT_DEADLINE;
         let mut command = std::process::Command::new("cmd.exe");
         command
@@ -703,7 +705,28 @@ mod windows_tests {
             ])
             .stdout(Stdio::piped());
         let (mut child, group) = spawn_std_grouped(&mut command).unwrap();
-        let mut output = child.stdout.take().unwrap();
+        let output = std::io::BufReader::new(child.stdout.take().unwrap());
+
+        let (reader_sender, reader) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut output = output;
+            let mut marker = String::new();
+            let read = output.read_line(&mut marker);
+            reader_sender
+                .send(read.map(|_| marker))
+                .expect("stage: marker sent");
+            let mut remaining = Vec::new();
+            let drained = output.read_to_end(&mut remaining);
+            reader_sender
+                .send(drained.map(|_| remaining))
+                .expect("stage: drained sent");
+        });
+
+        let marker = reader
+            .recv_timeout(stage_timeout)
+            .expect("stage: marker read")
+            .expect("stage: marker read ok");
+        assert_eq!(marker.trim(), "spawned");
 
         let (wait_sender, wait_receiver) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -713,19 +736,14 @@ mod windows_tests {
             .recv_timeout(stage_timeout)
             .expect("stage: leader exit");
 
-        let (sender, receiver) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let mut remaining = Vec::new();
-            sender.send(output.read_to_end(&mut remaining)).unwrap();
-        });
         assert!(matches!(
-            receiver.recv_timeout(Duration::from_millis(250)),
+            reader.recv_timeout(Duration::from_millis(250)),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout)
         ));
 
         terminate_group(group).expect("stage: terminate group");
 
-        receiver
+        reader
             .recv_timeout(stage_timeout)
             .expect("stage: descendant output closes")
             .expect("stage: descendant output read");
