@@ -134,6 +134,22 @@ fn the_generated_notice_stays_a_release_artifact() {
 }
 
 #[test]
+fn the_release_gate_only_trusts_push_runs_of_the_tagged_commit() {
+    let workflow = release_workflow();
+
+    assert_contains(&workflow, "for workflow in ci sanitizers; do");
+    assert_contains(
+        &workflow,
+        r#"runs?event=push&head_sha=${COMMIT}&per_page=1"#,
+    );
+    assert_contains(&workflow, r#"if [ "$conclusion" != "success" ]; then"#);
+    assert!(
+        !workflow.contains(r#"runs?head_sha="#),
+        "a pull request run tests the merge commit, so the gate must filter on push runs"
+    );
+}
+
+#[test]
 fn the_archive_stages_the_binary_and_every_release_document() {
     let workflow = release_workflow();
 

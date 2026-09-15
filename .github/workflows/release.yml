@@ -29,7 +29,7 @@ jobs:
           REPOSITORY: ${{ github.repository }}
         run: |
           for workflow in ci sanitizers; do
-            conclusion="$(gh api "repos/${REPOSITORY}/actions/workflows/${workflow}.yml/runs?head_sha=${COMMIT}&per_page=1" --jq '.workflow_runs[0].conclusion // "missing"')"
+            conclusion="$(gh api "repos/${REPOSITORY}/actions/workflows/${workflow}.yml/runs?event=push&head_sha=${COMMIT}&per_page=1" --jq '.workflow_runs[0].conclusion // "missing"')"
             if [ "$conclusion" != "success" ]; then
               echo "refusing to release: workflow ${workflow} concluded ${conclusion} for ${COMMIT}" >&2
               exit 1
