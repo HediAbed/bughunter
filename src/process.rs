@@ -699,17 +699,10 @@ mod windows_tests {
                 "/D",
                 "/S",
                 "/C",
-                r#"set /p ready= & start "" /B ping.exe -n 30 127.0.0.1 & echo spawned"#,
+                r#"start "" /B ping.exe -n 30 127.0.0.1 & echo spawned"#,
             ])
-            .stdin(Stdio::piped())
             .stdout(Stdio::piped());
         let (mut child, group) = spawn_std_grouped(&mut command).unwrap();
-        child
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(b"ready\n")
-            .expect("stage: stdin write");
         let mut output = child.stdout.take().unwrap();
 
         let (wait_sender, wait_receiver) = std::sync::mpsc::channel();
