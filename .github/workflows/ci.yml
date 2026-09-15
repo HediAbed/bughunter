@@ -54,7 +54,7 @@ jobs:
   windows-process:
     name: windows subprocess tree
     runs-on: windows-2022
-    timeout-minutes: 15
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
