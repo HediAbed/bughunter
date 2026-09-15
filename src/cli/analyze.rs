@@ -1097,6 +1097,32 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_finished_worker_returns_its_result_and_a_cancelled_one_does_not_wait() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+
+        let completed = runtime.block_on(async {
+            let blocking = tokio::task::spawn_blocking(|| -> Result<(), BugHunterError> { Ok(()) });
+            race_worker(
+                crate::cancel::CancelToken::default(),
+                "run static analysis",
+                blocking,
+            )
+            .await
+        });
+
+        assert!(completed.is_ok());
+
+        let cancelled = runtime.block_on(async {
+            let cancel = crate::cancel::CancelToken::default();
+            cancel.cancel();
+            let blocking = tokio::task::spawn_blocking(|| -> Result<(), BugHunterError> { Ok(()) });
+            race_worker(cancel, "run static analysis", blocking).await
+        });
+
+        assert!(matches!(cancelled, Err(BugHunterError::Cancelled)));
+    }
+
     #[cfg(unix)]
     const SIGNAL_DELIVERY_ATTEMPTS: usize = 25;
 

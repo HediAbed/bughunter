@@ -114,17 +114,52 @@ mod tests {
             .collect()
     }
 
+    struct ScriptedStream {
+        written: Vec<u8>,
+        failure: Option<io::ErrorKind>,
+    }
+
+    impl ScriptedStream {
+        fn accepting() -> Self {
+            Self {
+                written: Vec::new(),
+                failure: None,
+            }
+        }
+
+        fn refusing(failure: io::ErrorKind) -> Self {
+            Self {
+                written: Vec::new(),
+                failure: Some(failure),
+            }
+        }
+    }
+
+    impl Write for ScriptedStream {
+        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            if let Some(failure) = self.failure {
+                return Err(io::Error::from(failure));
+            }
+            self.written.extend_from_slice(buffer);
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
     #[test]
     fn replay_copies_sanitized_logs_without_holding_the_state_lock() {
         let state: SharedState = Arc::new(Mutex::new(ScanState::new()));
         state
             .lock()
             .push_log(tracing::Level::WARN, "line\nwith-control".into());
-        let mut output = Vec::new();
+        let mut stream = ScriptedStream::accepting();
 
-        replay_logs(&state, &mut output).unwrap();
+        replay_logs(&state, &mut stream).unwrap();
 
-        let output = String::from_utf8(output).unwrap();
+        let output = String::from_utf8(stream.written).unwrap();
         assert!(output.contains("WARN"));
         assert!(output.contains("line\\u{a}with-control"));
         assert!(!output.contains("line\nwith-control"));
@@ -132,27 +167,17 @@ mod tests {
 
     #[test]
     fn a_replay_to_a_failing_stream_surfaces_the_write_error() {
-        struct RefusingStream;
-
-        impl Write for RefusingStream {
-            fn write(&mut self, _buffer: &[u8]) -> io::Result<usize> {
-                Err(io::Error::from(io::ErrorKind::BrokenPipe))
-            }
-
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
-        }
-
         let state: SharedState = Arc::new(Mutex::new(ScanState::new()));
         state
             .lock()
             .push_log(tracing::Level::INFO, "unreachable reader".into());
+        let mut stream = ScriptedStream::refusing(io::ErrorKind::BrokenPipe);
 
-        let error = replay_logs(&state, &mut RefusingStream)
+        let error = replay_logs(&state, &mut stream)
             .expect_err("a broken stream must surface its write error");
 
         assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+        assert!(stream.written.is_empty());
     }
 
     #[test]

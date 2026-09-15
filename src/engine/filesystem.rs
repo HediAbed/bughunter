@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use cap_std::ambient_authority;
-use cap_std::fs::{Dir, File};
+use cap_std::fs::{Dir, File, Metadata};
 
 use crate::domain::{ProjectPath, ProjectRoot};
 use crate::errors::EngineError;
@@ -78,9 +78,16 @@ impl ProjectFilesystem {
 }
 
 fn require_regular_file(file: File, path: &Path) -> Result<File, EngineError> {
-    let metadata = file
-        .metadata()
-        .map_err(|source| map_open_error(path.to_path_buf(), source))?;
+    let metadata = file.metadata();
+    accept_regular_file(file, path, metadata)
+}
+
+fn accept_regular_file(
+    file: File,
+    path: &Path,
+    metadata: std::io::Result<Metadata>,
+) -> Result<File, EngineError> {
+    let metadata = metadata.map_err(|source| map_open_error(path.to_path_buf(), source))?;
     if metadata.file_type().is_file() {
         return Ok(file);
     }
@@ -248,5 +255,44 @@ mod tests {
         let error = filesystem.metadata(&path).unwrap_err();
 
         assert!(matches!(error, EngineError::FileNotFound(_)));
+    }
+
+    #[test]
+    fn acceptance_maps_a_metadata_failure_and_still_screens_irregular_files() {
+        let project = TempDir::new().unwrap();
+        std::fs::write(project.path().join("file.txt"), "body").unwrap();
+        std::fs::create_dir(project.path().join("directory")).unwrap();
+        let filesystem = filesystem(&project);
+        let file_path = filesystem
+            .project_path(&project.path().join("file.txt"))
+            .unwrap();
+        let absolute = project.path().join("file.txt");
+
+        let opened = filesystem.open_file(&file_path).unwrap();
+        let metadata = opened.metadata();
+        assert!(accept_regular_file(opened, &absolute, metadata).is_ok());
+
+        let opened = filesystem.open_file(&file_path).unwrap();
+        let error = accept_regular_file(
+            opened,
+            &absolute,
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+        )
+        .unwrap_err();
+        match error {
+            EngineError::Io { path, source } => {
+                assert_eq!(path, absolute);
+                assert_eq!(source.kind(), std::io::ErrorKind::PermissionDenied);
+            }
+            other => panic!("expected an I/O error, got {other:?}"),
+        }
+
+        let directory_path = filesystem
+            .project_path(&project.path().join("directory"))
+            .unwrap();
+        let directory_metadata = filesystem.metadata(&directory_path).unwrap();
+        let opened = filesystem.open_file(&file_path).unwrap();
+        let error = accept_regular_file(opened, &absolute, Ok(directory_metadata)).unwrap_err();
+        assert!(matches!(error, EngineError::NotRegularFile(_)));
     }
 }
