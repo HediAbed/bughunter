@@ -339,15 +339,34 @@ mod tests {
         poll_action_with, restore_state_with, run_input_loop, run_render_loop, setup_terminal,
         setup_terminal_with, setup_terminal_with_backend, spawn_input_loop, spawn_render_loop,
     };
-    use ratatui::Terminal;
     use ratatui::backend::CrosstermBackend;
     use ratatui::crossterm::event::{
         Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, MouseButton,
         MouseEvent, MouseEventKind,
     };
+    use ratatui::layout::Rect;
+    use ratatui::{Terminal, TerminalOptions, Viewport};
+    use std::io;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
+
+    const FIXTURE_TERMINAL_WIDTH: u16 = 80;
+    const FIXTURE_TERMINAL_HEIGHT: u16 = 24;
+
+    fn fixture_terminal() -> io::Result<super::TuiTerminal> {
+        Terminal::with_options(
+            CrosstermBackend::new(io::stderr()),
+            TerminalOptions {
+                viewport: Viewport::Fixed(Rect::new(
+                    0,
+                    0,
+                    FIXTURE_TERMINAL_WIDTH,
+                    FIXTURE_TERMINAL_HEIGHT,
+                )),
+            },
+        )
+    }
 
     fn key(code: KeyCode, modifiers: KeyModifiers) -> Event {
         Event::Key(KeyEvent {
@@ -713,7 +732,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_spawned_render_loop_stopped_up_front_draws_once_without_cancelling() {
-        let terminal = Terminal::new(CrosstermBackend::new(std::io::stderr())).unwrap();
+        let terminal = fixture_terminal().expect("a fixed viewport needs no host terminal");
         let stop = Arc::new(AtomicBool::new(true));
         let cancel = crate::cancel::CancelToken::default();
 
@@ -902,7 +921,7 @@ mod tests {
 
     #[test]
     fn setup_with_backend_propagates_a_stage_failure_and_returns_active_state_on_success() {
-        let mut create_terminal = || Terminal::new(CrosstermBackend::new(std::io::stderr()));
+        let mut create_terminal = fixture_terminal;
 
         let outcome = setup_terminal_with_backend(
             &mut || Err(std::io::Error::other("raw mode unavailable")),

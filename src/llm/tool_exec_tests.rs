@@ -1,6 +1,7 @@
 use super::*;
 use crate::config::EngineConfig;
 use crate::engine::DefaultEngine;
+use crate::errors::EngineError;
 use crate::llm::tools;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
@@ -1283,4 +1284,46 @@ fn submit_findings_enforces_every_finding_field_bound() {
         assert!(error.contains(&format!("field '{field}'")), "{error}");
         assert!(error.contains(&reason), "{error}");
     }
+}
+
+#[test]
+fn a_cancelled_discovery_propagates_the_selection_failure() {
+    let (dir, engine, counter) = scoped_env();
+    let exec = inventory_executor(&dir, &engine, &counter);
+    let cancel = CancelToken::default();
+    cancel.cancel();
+
+    let error = exec
+        .discover_files(&json!({}), Some(&cancel))
+        .expect_err("a cancelled selection must fail discovery");
+
+    assert_eq!(error, EngineError::Cancelled.to_string());
+}
+
+#[test]
+fn a_cancelled_text_search_propagates_the_selection_failure() {
+    let (dir, engine, counter) = scoped_env();
+    let exec = inventory_executor(&dir, &engine, &counter);
+    let cancel = CancelToken::default();
+    cancel.cancel();
+
+    let error = exec
+        .search_text(&json!({ "pattern": "fn " }), Some(&cancel))
+        .expect_err("a cancelled selection must fail text search");
+
+    assert_eq!(error, EngineError::Cancelled.to_string());
+}
+
+#[test]
+fn a_cancelled_stats_collection_propagates_the_engine_failure() {
+    let (dir, engine, counter) = executor_env();
+    let exec = executor(&dir, &engine, &counter);
+    let cancel = CancelToken::default();
+    cancel.cancel();
+
+    let error = exec
+        .project_stats(&json!({}), Some(&cancel))
+        .expect_err("a cancelled run must fail stats collection");
+
+    assert_eq!(error, EngineError::Cancelled.to_string());
 }
