@@ -784,6 +784,25 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn binary_detection_reports_a_regular_file_that_refuses_to_be_read() {
+        let root = ProjectRoot::open(Path::new("/proc/self")).unwrap();
+        let filesystem = ProjectFilesystem::open(root).unwrap();
+        let unreadable = filesystem.root().as_path().join("mem");
+
+        let error = is_binary_file(&filesystem, &unreadable)
+            .expect_err("an unreadable process mapping must surface an I/O error");
+
+        match error {
+            EngineError::Io { path, source } => {
+                assert_eq!(path, unreadable);
+                assert_eq!(source.raw_os_error(), Some(libc::EIO));
+            }
+            other => panic!("expected an I/O error, got {other:?}"),
+        }
+    }
+
     #[test]
     fn results_are_sorted_alphabetically() {
         let dir = TempDir::new().unwrap();

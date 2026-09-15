@@ -124,17 +124,24 @@ pub(super) fn exit_code_for_result(
 }
 
 fn report_partial_coverage(scan: &crate::report::ScanStatus) {
-    output::print_status(&format!(
+    for line in partial_coverage_status(scan) {
+        output::print_status(&line);
+    }
+}
+
+fn partial_coverage_status(scan: &crate::report::ScanStatus) -> Vec<String> {
+    let mut lines = vec![format!(
         "partial AI coverage: {}/{} shards completed, {}/{} files inspected",
         scan.shards_completed, scan.shards_total, scan.files_inspected, scan.files_presented
-    ));
+    )];
     if !scan.skipped_files.is_empty() || scan.omitted_diagnostics > 0 {
-        output::print_status(&skipped_files_status(
+        lines.push(skipped_files_status(
             &scan.skipped_files,
             scan.omitted_diagnostics,
             MAX_STATUS_LINE_BYTES,
         ));
     }
+    lines
 }
 
 fn skipped_files_status(skipped_files: &[String], omitted: u32, limit_bytes: usize) -> String {
@@ -859,6 +866,23 @@ mod tests {
         );
 
         assert_eq!(line, "skipped files: a.rs (gone), b.rs (gone)");
+    }
+
+    #[test]
+    fn partial_coverage_reports_a_skip_line_only_when_something_was_skipped() {
+        let clean = crate::report::ScanStatus::complete(2);
+        let skipped = crate::report::ScanStatus {
+            skipped_files: vec!["a.rs (gone)".to_string()],
+            ..crate::report::ScanStatus::complete(2)
+        };
+
+        let clean_lines = partial_coverage_status(&clean);
+        let skipped_lines = partial_coverage_status(&skipped);
+
+        assert_eq!(clean_lines.len(), 1);
+        assert!(clean_lines[0].starts_with("partial AI coverage:"));
+        assert_eq!(skipped_lines.len(), 2);
+        assert_eq!(skipped_lines[1], "skipped files: a.rs (gone)");
     }
 
     #[test]

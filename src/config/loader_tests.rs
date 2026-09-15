@@ -862,3 +862,22 @@ fn fuzz_configuration_entrypoint_rejects_a_not_a_number_temperature() {
         Err(ConfigError::InvalidValue { ref field, .. }) if field == "llm.temperature"
     ));
 }
+
+#[test]
+fn a_malformed_user_configuration_fails_the_load() {
+    let home = TempDir::new().unwrap();
+    let project = TempDir::new().unwrap();
+    let user_file = home.path().join("config.toml");
+    fs::write(&user_file, "[llm]\nmax_tokens = \n").unwrap();
+
+    let result = load_config(&TrustedConfigSource {
+        project_root: project.path().to_path_buf(),
+        explicit_file: None,
+        user_file: Some(user_file.clone()),
+    });
+
+    match result {
+        Err(ConfigError::ParseError { path, .. }) => assert_eq!(path, user_file),
+        other => panic!("expected a parse failure, got {other:?}"),
+    }
+}

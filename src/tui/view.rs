@@ -429,6 +429,22 @@ mod tests {
     }
 
     #[test]
+    fn a_header_too_short_for_the_gauge_renders_without_it() {
+        let mut state = ScanState::new();
+        state.total_shards = 1;
+        state.current_shard = 1;
+        state.phase = Phase::Reading;
+        state.shard.eligible_tokens = 10_000;
+        state.shard.inspected_tokens = 5_000;
+
+        let roomy = render_at(120, 20, &mut state);
+        let cramped = render_at(120, 4, &mut state);
+
+        assert!(roomy.contains("45%"), "{roomy}");
+        assert!(!cramped.contains("45%"), "{cramped}");
+    }
+
+    #[test]
     fn thousands_separator() {
         assert_eq!(format_thousands(204_800), "204,800");
         assert_eq!(format_thousands(1_000_000), "1,000,000");

@@ -1299,6 +1299,39 @@ fn findings_without_ranges_do_not_merge_across_pipelines() {
 }
 
 #[test]
+fn a_merged_duplicate_never_overwrites_an_existing_snippet_or_suggestion() {
+    let counter = FindingCounter::new();
+    let kept = Finding::new_static(
+        &counter,
+        AnalysisCategory::Bug,
+        Severity::High,
+        "same".into(),
+        "kept".into(),
+        PathBuf::from("source.rs"),
+    )
+    .with_rule("bug.same".into())
+    .with_lines(10, 20)
+    .with_snippet("kept snippet".into())
+    .with_suggestion("kept suggestion".into());
+    let mut duplicate = kept
+        .clone()
+        .with_snippet("duplicate snippet".into())
+        .with_suggestion("duplicate suggestion".into());
+    duplicate.source = FindingSource::Ai;
+
+    let merged = finalize_findings(
+        vec![kept, duplicate],
+        Path::new("."),
+        Confidence::Low,
+        &[AnalysisCategory::Bug],
+    );
+
+    assert_eq!(merged.len(), 1);
+    assert_eq!(merged[0].code_snippet.as_deref(), Some("kept snippet"));
+    assert_eq!(merged[0].suggestion.as_deref(), Some("kept suggestion"));
+}
+
+#[test]
 fn a_static_duplicate_replaces_an_ai_duplicate_as_the_primary_finding() {
     let counter = FindingCounter::new();
     let mut ai = Finding::new_static(

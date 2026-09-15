@@ -156,6 +156,40 @@ mod tests {
     }
 
     #[test]
+    fn an_oversized_ignore_line_fails_a_cancellable_inventory() {
+        let directory = TempDir::new().unwrap();
+        std::fs::write(directory.path().join("one.rs"), "fn one() {}\n").unwrap();
+        std::fs::write(
+            directory.path().join(".ignore"),
+            format!(
+                "{}\n",
+                "a".repeat(crate::engine::exclusions::MAX_IGNORE_LINE_BYTES + 1)
+            ),
+        )
+        .unwrap();
+
+        let error = match ProjectInventory::build_cancellable(
+            directory.path(),
+            &EngineConfig::default(),
+            &CancelToken::default(),
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("an ignore line past its budget must fail the walk"),
+        };
+
+        match error {
+            EngineError::DiscoveryLimitExceeded { resource, limit } => {
+                assert_eq!(resource, crate::engine::exclusions::IGNORE_LINE_BYTES);
+                assert_eq!(
+                    limit,
+                    crate::engine::exclusions::MAX_IGNORE_LINE_BYTES as u64
+                );
+            }
+            other => panic!("expected a discovery limit failure, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn a_cancelled_selection_refuses_to_hand_back_files() {
         let directory = TempDir::new().unwrap();
         std::fs::write(directory.path().join("one.rs"), "fn one() {}\n").unwrap();
