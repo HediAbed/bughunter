@@ -388,13 +388,30 @@ fn map_runtime_result<T>(result: std::io::Result<T>) -> Result<T, BugHunterError
     })
 }
 
+trait CancelTrigger {
+    async fn wait(&mut self) -> bool;
+}
+
+struct InterruptTrigger;
+
+impl CancelTrigger for InterruptTrigger {
+    async fn wait(&mut self) -> bool {
+        tokio::signal::ctrl_c().await.is_ok()
+    }
+}
+
+#[cfg(unix)]
+struct UnixSignalTrigger(tokio::signal::unix::Signal);
+
+#[cfg(unix)]
+impl CancelTrigger for UnixSignalTrigger {
+    async fn wait(&mut self) -> bool {
+        self.0.recv().await.is_some()
+    }
+}
+
 fn spawn_cancel_on_signals(cancel: crate::cancel::CancelToken) {
-    let interrupt = cancel.clone();
-    tokio::spawn(async move {
-        while tokio::signal::ctrl_c().await.is_ok() {
-            interrupt.cancel();
-        }
-    });
+    tokio::spawn(cancel_while_triggered(InterruptTrigger, cancel.clone()));
 
     #[cfg(unix)]
     {
@@ -403,27 +420,22 @@ fn spawn_cancel_on_signals(cancel: crate::cancel::CancelToken) {
     }
 }
 
+async fn cancel_while_triggered(
+    mut trigger: impl CancelTrigger,
+    cancel: crate::cancel::CancelToken,
+) {
+    while trigger.wait().await {
+        cancel.cancel();
+    }
+}
+
 #[cfg(unix)]
 fn spawn_cancel_on_unix_signal(
     cancel: crate::cancel::CancelToken,
     kind: tokio::signal::unix::SignalKind,
 ) {
-    if let Ok(mut signals) = tokio::signal::unix::signal(kind) {
-        tokio::spawn(async move {
-            while signals.recv().await.is_some() {
-                cancel.cancel();
-            }
-        });
-    }
-}
-
-#[cfg(test)]
-async fn cancel_after_signal(
-    cancel: crate::cancel::CancelToken,
-    signal: impl Future<Output = std::io::Result<()>>,
-) {
-    if signal.await.is_ok() {
-        cancel.cancel();
+    if let Ok(signals) = tokio::signal::unix::signal(kind) {
+        tokio::spawn(cancel_while_triggered(UnixSignalTrigger(signals), cancel));
     }
 }
 
@@ -650,18 +662,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn successful_signals_cancel_and_failed_signals_do_not() {
+    async fn every_trigger_cancels_until_the_source_stops() {
+        struct ScriptedTrigger {
+            remaining: usize,
+        }
+
+        impl CancelTrigger for ScriptedTrigger {
+            async fn wait(&mut self) -> bool {
+                let fired = self.remaining > 0;
+                self.remaining = self.remaining.saturating_sub(1);
+                fired
+            }
+        }
+
         let cancelled = crate::cancel::CancelToken::default();
-        cancel_after_signal(cancelled.clone(), std::future::ready(Ok(()))).await;
+        cancel_while_triggered(ScriptedTrigger { remaining: 2 }, cancelled.clone()).await;
         assert!(cancelled.is_cancelled());
 
-        let active = crate::cancel::CancelToken::default();
-        cancel_after_signal(
-            active.clone(),
-            std::future::ready(Err(std::io::Error::other("signal unavailable"))),
-        )
-        .await;
-        assert!(!active.is_cancelled());
+        let untouched = crate::cancel::CancelToken::default();
+        cancel_while_triggered(ScriptedTrigger { remaining: 0 }, untouched.clone()).await;
+        assert!(!untouched.is_cancelled());
     }
 
     #[test]

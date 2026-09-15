@@ -240,66 +240,84 @@ fn log_directive_scopes_dependencies_to_warn() {
     assert_eq!(directive(true, &LogLevel::Error), "warn,bughunter=debug");
 }
 
+struct ReportStream {
+    written: Vec<u8>,
+    write_failure: Option<std::io::ErrorKind>,
+    flush_failure: Option<&'static str>,
+}
+
+impl ReportStream {
+    fn accepting() -> Self {
+        Self {
+            written: Vec::new(),
+            write_failure: None,
+            flush_failure: None,
+        }
+    }
+
+    fn refusing_writes(kind: std::io::ErrorKind) -> Self {
+        Self {
+            write_failure: Some(kind),
+            ..Self::accepting()
+        }
+    }
+
+    fn refusing_flushes(message: &'static str) -> Self {
+        Self {
+            flush_failure: Some(message),
+            ..Self::accepting()
+        }
+    }
+}
+
+impl std::io::Write for ReportStream {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if let Some(kind) = self.write_failure {
+            return Err(std::io::Error::new(kind, "reader closed"));
+        }
+        self.written.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self.flush_failure {
+            Some(message) => Err(std::io::Error::other(message)),
+            None => Ok(()),
+        }
+    }
+}
+
 #[test]
 fn report_stream_receives_every_byte_and_one_trailing_newline() {
-    let mut unterminated = Vec::new();
+    let mut unterminated = ReportStream::accepting();
     write_report_line(&mut unterminated, "{\"findings\":[]}").unwrap();
 
-    let mut terminated = Vec::new();
+    let mut terminated = ReportStream::accepting();
     write_report_line(&mut terminated, "{\"findings\":[]}\n").unwrap();
 
     assert_eq!(
-        String::from_utf8(unterminated).unwrap(),
+        String::from_utf8(unterminated.written).unwrap(),
         "{\"findings\":[]}\n"
     );
     assert_eq!(
-        String::from_utf8(terminated).unwrap(),
+        String::from_utf8(terminated.written).unwrap(),
         "{\"findings\":[]}\n"
     );
 }
 
 #[test]
 fn report_stream_write_failures_reach_the_caller() {
-    struct ClosedPipe;
+    let mut stream = ReportStream::refusing_writes(std::io::ErrorKind::BrokenPipe);
 
-    impl std::io::Write for ClosedPipe {
-        fn write(&mut self, _bytes: &[u8]) -> std::io::Result<usize> {
-            Err(std::io::Error::new(
-                std::io::ErrorKind::BrokenPipe,
-                "reader closed",
-            ))
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    let error = write_report_line(&mut ClosedPipe, "report").unwrap_err();
+    let error = write_report_line(&mut stream, "report").unwrap_err();
 
     assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
 }
 
 #[test]
 fn report_stream_flush_failures_reach_the_caller() {
-    struct UnflushableStream {
-        written: Vec<u8>,
-    }
+    let mut stream = ReportStream::refusing_flushes("device full");
 
-    impl std::io::Write for UnflushableStream {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            self.written.extend_from_slice(bytes);
-            Ok(bytes.len())
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Err(std::io::Error::other("device full"))
-        }
-    }
-
-    let mut stream = UnflushableStream {
-        written: Vec::new(),
-    };
     let error = write_report_line(&mut stream, "report").unwrap_err();
 
     assert_eq!(error.to_string(), "device full");

@@ -61,14 +61,26 @@ impl ProjectInventory {
                 config,
                 &walk.files,
                 cancel,
-            )?,
-            None => stats::project_stats_for_entries(&filesystem, config, &walk.files),
+            ),
+            None => Ok(stats::project_stats_for_entries(
+                &filesystem,
+                config,
+                &walk.files,
+            )),
         };
+        Self::assemble(filesystem, walk, stats)
+    }
+
+    fn assemble(
+        filesystem: ProjectFilesystem,
+        walk: walker::ProjectWalk,
+        stats: Result<ProjectStats, EngineError>,
+    ) -> Result<Self, EngineError> {
         Ok(Self {
             filesystem,
             files: walk.files,
             unreadable_files: walk.unreadable,
-            stats,
+            stats: stats?,
         })
     }
 
@@ -112,6 +124,14 @@ impl ProjectInventory {
         if cancel.is_cancelled() {
             return Err(EngineError::Cancelled);
         }
+        self.select_allowed_cancellable(allowed_files, cancel)
+    }
+
+    fn select_allowed_cancellable<'a>(
+        &'a self,
+        allowed_files: Option<&BTreeSet<String>>,
+        cancel: &CancelToken,
+    ) -> Result<Cow<'a, [FileEntry]>, EngineError> {
         match allowed_files {
             None => Ok(Cow::Borrowed(&self.files)),
             Some(allowed) => {
@@ -187,6 +207,49 @@ mod tests {
             }
             other => panic!("expected a discovery limit failure, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_cancelled_selection_stops_partway_through_the_entries() {
+        let directory = TempDir::new().unwrap();
+        std::fs::write(directory.path().join("one.rs"), "fn one() {}\n").unwrap();
+        let inventory =
+            ProjectInventory::build(directory.path(), &EngineConfig::default()).unwrap();
+        let allowed: BTreeSet<String> = inventory
+            .files()
+            .iter()
+            .map(|entry| entry.relative_path.clone())
+            .collect();
+        let cancel = CancelToken::default();
+        cancel.cancel();
+
+        let error = inventory
+            .select_allowed_cancellable(Some(&allowed), &cancel)
+            .expect_err("a cancelled scan must not keep selecting entries");
+
+        assert!(matches!(error, EngineError::Cancelled));
+    }
+
+    #[test]
+    fn a_failed_statistics_pass_fails_the_inventory() {
+        let directory = TempDir::new().unwrap();
+        std::fs::write(directory.path().join("one.rs"), "fn one() {}\n").unwrap();
+        let project_root = ProjectRoot::open(directory.path()).unwrap();
+        let filesystem = ProjectFilesystem::open(project_root).unwrap();
+        let walk = walker::walk_project_with_capability(
+            &filesystem,
+            &EngineConfig::default(),
+            &DiscoverOpts::default(),
+        )
+        .unwrap();
+
+        let error = match ProjectInventory::assemble(filesystem, walk, Err(EngineError::Cancelled))
+        {
+            Err(error) => error,
+            Ok(_) => panic!("a failed statistics pass must fail the inventory"),
+        };
+
+        assert!(matches!(error, EngineError::Cancelled));
     }
 
     #[test]

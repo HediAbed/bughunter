@@ -240,29 +240,17 @@ pub async fn run_analysis(
     })
     .await;
     let preparation = cancellation_precedes(&cancel, preparation);
-    let (ctx, mut findings) = match preparation {
-        Ok(prepared) => prepared,
-        Err(error) => {
-            report_failed_outcome(&reporter, &error);
-            return Err(error);
-        }
-    };
-    if let Err(error) = ensure_not_cancelled(&cancel) {
-        report_failed_outcome(&reporter, &error);
-        return Err(error);
-    }
+    let (ctx, mut findings) = reporting_failures(&reporter, preparation)?;
+    reporting_failures(&reporter, ensure_not_cancelled(&cancel))?;
     reporter.set_findings(findings.len());
     info!(backend = ?config.llm.backend, "starting AI-powered analysis");
 
     let system_prompt = build_analysis_prompt(config, review);
     let mut start_terminal = Tui::start;
-    let tui = match start_tui(use_tui, &state, &cancel, &mut start_terminal) {
-        Ok(tui) => tui,
-        Err(error) => {
-            report_failed_outcome(&reporter, &error);
-            return Err(error);
-        }
-    };
+    let tui = reporting_failures(
+        &reporter,
+        start_tui(use_tui, &state, &cancel, &mut start_terminal),
+    )?;
     let ai_result = run_ai_analysis(AiRequest {
         config,
         backend_working_directory,
@@ -299,16 +287,13 @@ pub async fn run_analysis(
         Err(error) => report_failed_outcome(&reporter, error),
     }
     if let Some(tui) = tui {
-        result = preserve_analysis_result(result, tui.stop().await);
-        if let Err(error) = &result {
-            report_failed_outcome(&reporter, error);
-        }
+        result = reporting_failures(
+            &reporter,
+            preserve_analysis_result(result, tui.stop().await),
+        );
     }
     if result.is_ok() {
-        result = cancellation_precedes(&cancel, result);
-        if let Err(error) = &result {
-            report_failed_outcome(&reporter, error);
-        }
+        result = reporting_failures(&reporter, cancellation_precedes(&cancel, result));
     }
 
     result
@@ -341,6 +326,16 @@ fn report_failed_outcome(reporter: &Reporter, error: &BugHunterError) {
         _ => crate::tui::Phase::Failed,
     };
     reporter.phase(phase, error.to_string());
+}
+
+fn reporting_failures<T>(
+    reporter: &Reporter,
+    result: Result<T, BugHunterError>,
+) -> Result<T, BugHunterError> {
+    if let Err(error) = &result {
+        report_failed_outcome(reporter, error);
+    }
+    result
 }
 
 fn cancellation_precedes<T>(

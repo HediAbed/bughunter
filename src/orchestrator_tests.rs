@@ -980,28 +980,49 @@ async fn a_run_on_a_missing_project_root_fails_and_marks_the_run_failed() {
     assert_eq!(state.lock().phase, crate::tui::Phase::Failed);
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WorkerScript {
+    Succeed,
+    Panic,
+    BlockUntilCancelled,
+}
+
 #[tokio::test]
-async fn panicked_blocking_analysis_worker_returns_a_typed_error() {
-    let panic_on_run = Arc::new(std::sync::atomic::AtomicBool::new(false));
+async fn every_blocking_worker_outcome_maps_to_its_own_error() {
+    let script = Arc::new(parking_lot::Mutex::new(WorkerScript::Succeed));
+    let observed_cancel = Arc::new(parking_lot::Mutex::new(
+        crate::cancel::CancelToken::default(),
+    ));
+    let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let worker = {
-        let panic_on_run = Arc::clone(&panic_on_run);
+        let script = Arc::clone(&script);
+        let observed_cancel = Arc::clone(&observed_cancel);
+        let started = Arc::clone(&started);
         move || -> Result<(), BugHunterError> {
-            if panic_on_run.load(std::sync::atomic::Ordering::Relaxed) {
-                panic!("worker panic");
+            started.store(true, std::sync::atomic::Ordering::SeqCst);
+            match *script.lock() {
+                WorkerScript::Succeed => Ok(()),
+                WorkerScript::Panic => panic!("worker panic"),
+                WorkerScript::BlockUntilCancelled => {
+                    let cancel = observed_cancel.lock().clone();
+                    while !cancel.is_cancelled() {
+                        std::thread::yield_now();
+                    }
+                    Err(crate::errors::EngineError::Cancelled.into())
+                }
             }
-            Ok(())
         }
     };
+
     let cancel = crate::cancel::CancelToken::default();
     run_blocking_analysis("prepare project", &cancel, worker.clone())
         .await
         .unwrap();
-    panic_on_run.store(true, std::sync::atomic::Ordering::Relaxed);
 
-    let error = run_blocking_analysis("prepare project", &cancel, worker)
+    *script.lock() = WorkerScript::Panic;
+    let error = run_blocking_analysis("prepare project", &cancel, worker.clone())
         .await
         .unwrap_err();
-
     assert!(matches!(
         error,
         BugHunterError::Analysis(crate::errors::AnalysisError::WorkerFailed {
@@ -1009,29 +1030,33 @@ async fn panicked_blocking_analysis_worker_returns_a_typed_error() {
             ..
         })
     ));
-}
 
-#[tokio::test]
-async fn cancellation_interrupts_a_cooperative_blocking_worker() {
-    let cancel = crate::cancel::CancelToken::default();
-    let worker_cancel = cancel.clone();
-    let runner_cancel = cancel.clone();
-    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
-
-    let task = tokio::spawn(async move {
-        run_blocking_analysis("cooperative work", &runner_cancel, move || {
-            let _ = started_tx.send(());
-            while !worker_cancel.is_cancelled() {
-                std::thread::yield_now();
-            }
-            Err::<(), BugHunterError>(crate::errors::EngineError::Cancelled.into())
-        })
+    let already_cancelled = crate::cancel::CancelToken::default();
+    already_cancelled.cancel();
+    started.store(false, std::sync::atomic::Ordering::SeqCst);
+    let error = run_blocking_analysis("prepare project", &already_cancelled, worker.clone())
         .await
-    });
-    started_rx.await.unwrap();
-    cancel.cancel();
+        .unwrap_err();
+    assert!(matches!(error, BugHunterError::Cancelled));
+    assert!(
+        !started.load(std::sync::atomic::Ordering::SeqCst),
+        "a cancelled run must not start its worker"
+    );
 
-    let error = tokio::time::timeout(std::time::Duration::from_secs(1), task)
+    *script.lock() = WorkerScript::BlockUntilCancelled;
+    let mid_flight = crate::cancel::CancelToken::default();
+    *observed_cancel.lock() = mid_flight.clone();
+    started.store(false, std::sync::atomic::Ordering::SeqCst);
+    let runner_cancel = mid_flight.clone();
+    let task = tokio::spawn(async move {
+        run_blocking_analysis("cooperative work", &runner_cancel, worker).await
+    });
+    while !started.load(std::sync::atomic::Ordering::SeqCst) {
+        tokio::task::yield_now().await;
+    }
+    mid_flight.cancel();
+
+    let error = tokio::time::timeout(std::time::Duration::from_secs(5), task)
         .await
         .expect("cancellation must promptly release the async caller")
         .expect("worker task must not panic")
@@ -1440,6 +1465,23 @@ fn an_active_token_lets_a_completed_result_through() {
         error,
         BugHunterError::Analysis(crate::errors::AnalysisError::WorkerFailed { .. })
     ));
+}
+
+#[test]
+fn only_a_failure_is_announced_to_the_reporter() {
+    let state = crate::tui::shared_state();
+    let reporter = Reporter::new(state.clone());
+
+    assert_eq!(
+        reporting_failures(&reporter, Ok::<u8, BugHunterError>(7)).ok(),
+        Some(7)
+    );
+    assert_ne!(state.lock().phase, crate::tui::Phase::Cancelled);
+
+    let error = reporting_failures(&reporter, Err::<u8, _>(BugHunterError::Cancelled)).unwrap_err();
+
+    assert!(matches!(error, BugHunterError::Cancelled));
+    assert_eq!(state.lock().phase, crate::tui::Phase::Cancelled);
 }
 
 #[test]

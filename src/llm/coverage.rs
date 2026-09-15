@@ -83,6 +83,18 @@ fn repository_worker_failure(error: tokio::task::JoinError) -> LlmError {
     LlmError::AgentProtocol(format!("repository analysis worker failed: {error}"))
 }
 
+type ShardMapJoin = Result<Result<repomap::RepoMap, LlmError>, tokio::task::JoinError>;
+
+fn finish_shard_map(
+    joined: ShardMapJoin,
+    cancelled: bool,
+) -> Result<Result<repomap::RepoMap, LlmError>, LlmError> {
+    if cancelled {
+        return Err(LlmError::Cancelled);
+    }
+    joined.map_err(repository_worker_failure)
+}
+
 fn repository_build_failure(error: crate::errors::EngineError) -> LlmError {
     match error {
         crate::errors::EngineError::Cancelled => LlmError::Cancelled,
@@ -393,10 +405,7 @@ impl<'a> ShardExecutor<'a> {
             }
             joined = &mut worker => joined,
         };
-        if self.cancel.is_cancelled() {
-            return Err(LlmError::Cancelled);
-        }
-        joined.map_err(repository_worker_failure)?
+        finish_shard_map(joined, self.cancel.is_cancelled())?
     }
 
     async fn analyze_shard(

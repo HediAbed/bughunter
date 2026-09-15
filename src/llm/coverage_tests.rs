@@ -1258,3 +1258,31 @@ async fn a_review_with_nothing_to_present_fails_before_the_model_is_called() {
         "an empty review must not reach the model"
     );
 }
+
+#[tokio::test]
+async fn a_shard_map_join_is_discarded_once_the_run_is_cancelled() {
+    let completed: ShardMapJoin = Ok(Err(LlmError::Cancelled));
+    assert!(matches!(
+        finish_shard_map(completed, false),
+        Ok(Err(LlmError::Cancelled))
+    ));
+
+    let cancelled: ShardMapJoin = Ok(Err(LlmError::Cancelled));
+    assert!(matches!(
+        finish_shard_map(cancelled, true),
+        Err(LlmError::Cancelled)
+    ));
+
+    let panicked = tokio::task::spawn_blocking(|| -> Result<repomap::RepoMap, LlmError> {
+        panic!("the repository map worker blew up");
+    })
+    .await;
+    let error = finish_shard_map(panicked, false)
+        .expect_err("a panicking worker must surface a protocol error");
+    assert!(
+        error
+            .to_string()
+            .contains("repository analysis worker failed"),
+        "{error}"
+    );
+}

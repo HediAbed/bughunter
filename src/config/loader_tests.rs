@@ -489,6 +489,39 @@ fn a_non_unicode_api_token_in_the_environment_fails_loading() {
             if field == "BUGHUNTER_API_TOKEN" && reason.contains("Unicode")
     ));
 }
+
+#[test]
+fn numeric_environment_overrides_reach_the_loaded_config() {
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "config::loader::tests::a_numeric_environment_override_is_applied",
+            "--ignored",
+        ])
+        .env("BUGHUNTER_MAX_SHARD_SECONDS", " 1200 ")
+        .env("BUGHUNTER_MAX_CONTEXT_TOKENS", "4096")
+        .env_remove("BUGHUNTER_BACKEND")
+        .env_remove("BUGHUNTER_API_TOKEN")
+        .env_remove("BUGHUNTER_API_URL")
+        .env_remove("BUGHUNTER_MODEL")
+        .env_remove("BUGHUNTER_LOG_LEVEL")
+        .env_remove("BUGHUNTER_CATEGORIES")
+        .status()
+        .unwrap();
+
+    assert!(status.success());
+}
+
+#[test]
+#[ignore]
+fn a_numeric_environment_override_is_applied() {
+    let dir = TempDir::new().unwrap();
+
+    let config = load(dir.path(), None).unwrap();
+
+    assert_eq!(config.llm.max_shard_seconds, 1200);
+    assert_eq!(config.llm.max_context_tokens, 4096);
+}
 #[test]
 fn log_level_env_values_parse_case_insensitively() {
     assert!(matches!(parse_log_level("TRACE"), Ok(LogLevel::Trace)));
