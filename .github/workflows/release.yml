@@ -58,9 +58,11 @@ jobs:
 
       - name: Export reproducibility variables
         run: |
-          echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
-          echo "TZ=UTC" >> "$GITHUB_ENV"
-          echo "LC_ALL=C" >> "$GITHUB_ENV"
+          {
+            echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)"
+            echo "TZ=UTC"
+            echo "LC_ALL=C"
+          } >> "$GITHUB_ENV"
 
       - name: Build
         run: cargo build --release --locked

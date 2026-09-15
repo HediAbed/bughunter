@@ -1446,6 +1446,29 @@ mod tests {
     }
 
     #[test]
+    fn a_global_excludes_file_that_exists_is_loaded_and_applied() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("ignore");
+        std::fs::write(&source, "hidden.rs\n").unwrap();
+        let rules = rules_for(directory.path(), IgnoreLimits::default());
+        let mut state = IgnoreRuleState::default();
+
+        let global = rules.load_global_rules(&mut state, Some(&source)).unwrap();
+
+        assert!(
+            global
+                .matched(directory.path().join("ignored/hidden.rs"), false)
+                .is_ignore(),
+            "an existing global excludes file must contribute its rules"
+        );
+        assert!(
+            global
+                .matched(directory.path().join("visible.rs"), false)
+                .is_none()
+        );
+    }
+
+    #[test]
     fn bounded_pattern_loading_builds_an_effective_matcher() {
         let directory = tempfile::tempdir().unwrap();
         let rules = rules_for(directory.path(), IgnoreLimits::default());

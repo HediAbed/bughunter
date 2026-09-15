@@ -73,6 +73,48 @@ fn analyze_with_output_file_writes_report_and_stderr_note() {
 }
 
 #[test]
+fn analyze_honours_the_global_gitignore_in_the_user_home() {
+    let home = tempfile::tempdir().unwrap();
+    let global_ignore = home.path().join(".config/git");
+    std::fs::create_dir_all(&global_ignore).unwrap();
+    std::fs::write(global_ignore.join("ignore"), "globally_ignored/\n").unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("globally_ignored")).unwrap();
+    std::fs::write(
+        dir.path().join("globally_ignored/hidden.py"),
+        "# TODO: hidden\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("visible.py"), "x = 1\n").unwrap();
+
+    let output = Command::from_std(isolated_command(home.path()))
+        .args(["analyze", "--static-only"])
+        .args(["--project", dir.path().to_str().unwrap()])
+        .assert()
+        .code(5)
+        .get_output()
+        .clone();
+
+    let report: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("a valid json report");
+    assert_eq!(report["scan"]["completeness"], "partial");
+    assert_eq!(report["scan"]["files_presented"], 2);
+    assert_eq!(report["scan"]["files_inspected"], 1);
+    let skipped: Vec<&str> = report["scan"]["skipped_files"]
+        .as_array()
+        .expect("skipped files array")
+        .iter()
+        .filter_map(|entry| entry.as_str())
+        .collect();
+    assert_eq!(skipped.len(), 1);
+    assert!(
+        skipped[0].starts_with("globally_ignored/hidden.py"),
+        "{skipped:?}"
+    );
+    assert_eq!(report["summary"]["total"], 0);
+}
+
+#[test]
 fn analyze_reports_an_unwritable_destination_instead_of_succeeding() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("app.py"), "# TODO: later\n").unwrap();
