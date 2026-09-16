@@ -703,9 +703,20 @@ mod windows_tests {
                 "/C",
                 r#"start "" /B ping.exe -n 30 127.0.0.1 & echo spawned"#,
             ])
-            .stdout(Stdio::piped());
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
         let (mut child, group) = spawn_std_grouped(&mut command).unwrap();
         let output = std::io::BufReader::new(child.stdout.take().unwrap());
+        let mut errors = child.stderr.take().unwrap();
+
+        let (error_sender, error_reader) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut collected = Vec::new();
+            let read = errors.read_to_end(&mut collected);
+            error_sender
+                .send(read.map(|_| collected))
+                .expect("stage: stderr sent");
+        });
 
         let (reader_sender, reader) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -722,10 +733,19 @@ mod windows_tests {
                 .expect("stage: drained sent");
         });
 
-        let marker = reader
-            .recv_timeout(stage_timeout)
-            .expect("stage: marker read")
-            .expect("stage: marker read ok");
+        let marker = match reader.recv_timeout(stage_timeout) {
+            Ok(read) => read.expect("stage: marker read ok"),
+            Err(timeout) => {
+                let _ = terminate_group(group);
+                let stderr = error_reader
+                    .recv_timeout(Duration::from_secs(5))
+                    .ok()
+                    .and_then(std::result::Result::ok)
+                    .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+                    .unwrap_or_default();
+                panic!("stage: marker read: {timeout}, child stderr: {stderr}");
+            }
+        };
         assert_eq!(String::from_utf8_lossy(&marker).trim(), "spawned");
 
         let (wait_sender, wait_receiver) = std::sync::mpsc::channel();
