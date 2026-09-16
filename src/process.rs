@@ -748,4 +748,42 @@ mod windows_tests {
             .expect("stage: descendant output closes")
             .expect("stage: descendant output read");
     }
+
+    #[test]
+    fn a_plain_cmd_spawn_echoes_a_marker() {
+        use std::io::BufRead;
+
+        let mut command = std::process::Command::new("cmd.exe");
+        command
+            .args(["/D", "/S", "/C", "echo plain-marker"])
+            .stdout(Stdio::piped());
+        let mut child = command.spawn().unwrap();
+        let mut output = std::io::BufReader::new(child.stdout.take().unwrap());
+
+        let mut marker = String::new();
+        output.read_line(&mut marker).unwrap();
+        let status = child.wait().unwrap();
+
+        assert_eq!(marker.trim(), "plain-marker");
+        assert!(status.success());
+    }
+
+    #[test]
+    fn a_grouped_cmd_spawn_echoes_a_marker() {
+        use std::io::BufRead;
+
+        let mut command = std::process::Command::new("cmd.exe");
+        command
+            .args(["/D", "/S", "/C", "echo grouped-marker"])
+            .stdout(Stdio::piped());
+        let (mut child, _group) = spawn_std_grouped(&mut command).unwrap();
+        let mut output = std::io::BufReader::new(child.stdout.take().unwrap());
+
+        let mut marker = String::new();
+        output.read_line(&mut marker).unwrap();
+        let status = child.wait().unwrap();
+
+        assert_eq!(marker.trim(), "grouped-marker");
+        assert!(status.success());
+    }
 }
