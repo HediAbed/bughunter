@@ -661,18 +661,26 @@ mod windows_tests {
         assert!(!marker.exists());
     }
 
+    fn descendant_chain_script(directory: &tempfile::TempDir) -> std::path::PathBuf {
+        let script = directory.path().join("descendants.bat");
+        std::fs::write(
+            &script,
+            "@echo off\r\nstart \"\" /B ping.exe -n 30 127.0.0.1 >nul\r\necho spawned\r\n",
+        )
+        .unwrap();
+        script
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_tokio_group_terminates_descendants() {
         use tokio::io::{AsyncBufReadExt, AsyncReadExt};
 
+        let directory = tempfile::tempdir().unwrap();
+        let script = descendant_chain_script(&directory);
         let mut command = tokio::process::Command::new("cmd.exe");
         command
-            .args([
-                "/D",
-                "/S",
-                "/C",
-                r#"start "" /B ping.exe -n 30 127.0.0.1 >nul & echo spawned & ping.exe -n 30 127.0.0.1 >nul"#,
-            ])
+            .args(["/D", "/S", "/C"])
+            .arg(&script)
             .stdout(Stdio::piped())
             .kill_on_drop(true);
         let (mut child, group) = spawn_tokio_grouped(&mut command).await.unwrap();
@@ -695,14 +703,12 @@ mod windows_tests {
         use std::io::BufRead;
 
         let stage_timeout = GROUP_EXIT_DEADLINE;
+        let directory = tempfile::tempdir().unwrap();
+        let script = descendant_chain_script(&directory);
         let mut command = std::process::Command::new("cmd.exe");
         command
-            .args([
-                "/D",
-                "/S",
-                "/C",
-                r#"start "" /B ping.exe -n 30 127.0.0.1 & echo spawned"#,
-            ])
+            .args(["/D", "/S", "/C"])
+            .arg(&script)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let (mut child, group) = spawn_std_grouped(&mut command).unwrap();
