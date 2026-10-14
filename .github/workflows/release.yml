@@ -133,7 +133,7 @@ jobs:
           diff -u "$RUNNER_TEMP/archive-expected.txt" "$RUNNER_TEMP/archive-actual.txt"
           sha256sum "$archive" bughunter.cdx.json > SHA256SUMS
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: release-assets
           path: |
