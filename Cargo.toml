@@ -49,7 +49,7 @@ tree-sitter-bash = "0.25.1"
 tree-sitter-json = "0.24.8"
 tree-sitter-yaml = "0.7.2"
 tree-sitter-hcl = "1.1.0"
-zip = { version = "8", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 wait-timeout = "0.2"
 unicode-width = "0.2.2"
 unicode-segmentation = "1.13.3"
