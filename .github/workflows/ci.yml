@@ -43,7 +43,7 @@ jobs:
           toolchain: 1.88.0
           components: rustfmt, clippy
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
 
       - name: Format, lint, and test both Cargo manifests
         run: make check
@@ -64,7 +64,7 @@ jobs:
         with:
           toolchain: 1.88.0
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
 
       - name: Test Windows plain cmd echo
         timeout-minutes: 5
@@ -113,7 +113,7 @@ jobs:
           toolchain: ${{ env.NIGHTLY }}
           components: llvm-tools-preview
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
         with:
           shared-key: coverage
 
